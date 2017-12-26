@@ -21,10 +21,10 @@ namespace Demos.SpecializedTests
             //That is, move the memory location of bodies (and constraints, within type batches) to maximize the number of accesses to already-cached bodies.
 
             Random random = new Random(5);
-            for (int i = simulation.Bodies.Count - 1; i >= 1; --i)
+            for (int i = simulation.Bodies.ActiveSet.Count - 1; i >= 1; --i)
             {
                 //This helper function handles the updates that have to be performed across all body-sensitive systems.
-                BodyLayoutOptimizer.SwapBodyLocation(simulation.Bodies, simulation.ConstraintGraph, simulation.Solver, i, random.Next(i));
+                BodyLayoutOptimizer.SwapBodyLocation(simulation.Bodies, i, random.Next(i));
             }
 
         }
@@ -32,11 +32,12 @@ namespace Demos.SpecializedTests
         public static void ScrambleConstraints(Solver solver)
         {
             Random random = new Random(5);
-            for (int i = 0; i < solver.Batches.Count; ++i)
+            ref var activeSet = ref solver.ActiveSet;
+            for (int i = 0; i < activeSet.Batches.Count; ++i)
             {
-                for (int j = 0; j < solver.Batches[i].TypeBatches.Count; ++j)
+                for (int j = 0; j < activeSet.Batches[i].TypeBatches.Count; ++j)
                 {
-                    ref var typeBatch = ref solver.Batches[i].TypeBatches[j];
+                    ref var typeBatch = ref activeSet.Batches[i].TypeBatches[j];
                     solver.TypeProcessors[typeBatch.TypeId].Scramble(ref typeBatch, random, ref solver.HandleToConstraint);
                 }
             }
@@ -46,9 +47,9 @@ namespace Demos.SpecializedTests
             Random random = new Random(5);
             //Body lists are isolated enough that we don't have to worry about a bunch of internal bookkeeping. Just pull the list and mess with it.
             //Note that we cannot change the order of bodies within constraints! That would change behavior.
-            for (int bodyIndex = 0; bodyIndex < simulation.Bodies.Count; ++bodyIndex)
+            for (int bodyIndex = 0; bodyIndex < simulation.Bodies.ActiveSet.Count; ++bodyIndex)
             {
-                ref var list = ref simulation.ConstraintGraph.GetConstraintList(bodyIndex);
+                ref var list = ref simulation.Bodies.ActiveSet.Constraints[bodyIndex];
                 for (int i = 0; i < list.Count - 1; ++i)
                 {
                     ref var currentSlot = ref list[i];
@@ -86,7 +87,7 @@ namespace Demos.SpecializedTests
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public void LoopBody(int connectedBodyIndex)
             {
-                var entryIndex = HandlesToIdentity[Bodies.IndexToHandle[connectedBodyIndex]];
+                var entryIndex = HandlesToIdentity[Bodies.ActiveSet.IndexToHandle[connectedBodyIndex]];
                 if (IndexInConstraint == 0)
                     IdentityA = entryIndex;
                 else
@@ -114,8 +115,8 @@ namespace Demos.SpecializedTests
                 //The body in this constraint should both:
                 //1) have a handle associated with it, and 
                 //2) the constraint graph list for the body should include the constraint handle.
-                Debug.Assert(Simulation.Bodies.IndexToHandle[bodyIndex] >= 0);
-                Debug.Assert(Simulation.ConstraintGraph.BodyIsConstrainedBy(bodyIndex, ConstraintHandle));
+                Debug.Assert(Simulation.Bodies.ActiveSet.IndexToHandle[bodyIndex] >= 0);
+                Debug.Assert(Simulation.Bodies.ActiveSet.BodyIsConstrainedBy(bodyIndex, ConstraintHandle));
             }
         }
 
@@ -129,10 +130,11 @@ namespace Demos.SpecializedTests
         [Conditional("DEBUG")]
         static void Validate(Simulation simulation, List<int> removedConstraints, List<int> removedBodies, int originalBodyCount, int originalConstraintCount)
         {
-            for (int batchIndex = 0; batchIndex < simulation.Solver.Batches.Count; ++batchIndex)
+            ref var activeSet = ref simulation.Solver.ActiveSet;
+            for (int batchIndex = 0; batchIndex < activeSet.Batches.Count; ++batchIndex)
             {
-                ref var batch = ref simulation.Solver.Batches[batchIndex];
-                if (batchIndex == simulation.Solver.Batches.Count - 1)
+                ref var batch = ref activeSet.Batches[batchIndex];
+                if (batchIndex == activeSet.Batches.Count - 1)
                 {
                     Debug.Assert(batch.TypeBatches.Count > 0, "While a lower indexed batch may have zero elements (especially while batch compression isn't active), " +
                         "there should never be an empty batch at the end of the list.");
@@ -158,7 +160,7 @@ namespace Demos.SpecializedTests
                 }
             }
             var constraintCount = 0;
-            foreach (var batch in simulation.Solver.Batches)
+            foreach (var batch in activeSet.Batches)
             {
                 foreach (var typeBatch in batch.TypeBatches)
                 {
@@ -167,7 +169,7 @@ namespace Demos.SpecializedTests
             }
 
             Debug.Assert(removedConstraints.Count + constraintCount == originalConstraintCount, "Must not have lost (or gained) any constraints!");
-            Debug.Assert(removedBodies.Count + simulation.Bodies.Count == originalBodyCount, "Must not have lost (or gained) any bodies!");
+            Debug.Assert(removedBodies.Count + simulation.Bodies.ActiveSet.Count == originalBodyCount, "Must not have lost (or gained) any bodies!");
 
         }
         static void FastRemoveAt<T>(List<T> list, int index)
@@ -188,7 +190,7 @@ namespace Demos.SpecializedTests
             var toAddIndex = random.Next(removedBodies.Count);
             var toAdd = removedBodies[toAddIndex];
             FastRemoveAt(removedBodies, toAddIndex);
-            var bodyHandle = simulation.Add(ref bodyDescriptions[toAdd]);
+            var bodyHandle = simulation.Bodies.Add(ref bodyDescriptions[toAdd]);
             bodyHandlesToIdentity[bodyHandle] = toAdd;
             bodyHandles[toAdd] = bodyHandle;
             WriteLine($"Added body, handle: {bodyHandle}");
@@ -201,9 +203,9 @@ namespace Demos.SpecializedTests
             List<int> removedConstraints, List<int> removedBodies, Random random) where T : IConstraintDescription<T>
         {
             //Remove a body.
-            var removedBodyIndex = random.Next(simulation.Bodies.Count);
+            var removedBodyIndex = random.Next(simulation.Bodies.ActiveSet.Count);
             //All constraints associated with the body have to be removed first.
-            ref var constraintList = ref simulation.ConstraintGraph.GetConstraintList(removedBodyIndex);
+            ref var constraintList = ref simulation.Bodies.ActiveSet.Constraints[removedBodyIndex];
             for (int i = constraintList.Count - 1; i >= 0; --i)
             {
                 WriteLine($"Removing constraint (handle: {constraintList[i].ConnectingConstraintHandle}) for a body removal.");
@@ -212,8 +214,8 @@ namespace Demos.SpecializedTests
 #if DEBUG
             Debug.Assert(constraintList.Count == 0, "After we removed all the constraints, the constraint list should be empty! (It's a ref to the actual slot!)");
 #endif
-            var handle = simulation.Bodies.IndexToHandle[removedBodyIndex];
-            simulation.RemoveBody(handle);
+            var handle = simulation.Bodies.ActiveSet.IndexToHandle[removedBodyIndex];
+            simulation.Bodies.Remove(handle);
             bodyHandles[bodyHandlesToIdentity[handle]] = -1;
             removedBodies.Add(bodyHandlesToIdentity[handle]);
             bodyHandlesToIdentity[handle] = -1;
@@ -255,9 +257,10 @@ namespace Demos.SpecializedTests
             where T : IConstraintDescription<T>
         {
             //Remove a constraint.
-            var batchIndex = random.Next(simulation.Solver.Batches.Count);
-            ref var batch = ref simulation.Solver.Batches[batchIndex];
-            Debug.Assert(batchIndex < simulation.Solver.Batches.Count - 1 || batch.TypeBatches.Count > 0,
+            ref var activeSet = ref simulation.Solver.ActiveSet;
+            var batchIndex = random.Next(activeSet.Batches.Count);
+            ref var batch = ref activeSet.Batches[batchIndex];
+            Debug.Assert(batchIndex < activeSet.Batches.Count - 1 || batch.TypeBatches.Count > 0,
                 "While a lower index batch may end up empty due to a lack of active batch compression, " +
                 "the last batch should get removed if it becomes empty since there is no danger of pointer invaldiation.");
             if (batch.TypeBatches.Count > 0)
@@ -284,8 +287,8 @@ namespace Demos.SpecializedTests
             //Take a snapshot of the body descriptions.
             var bodyDescriptions = new BodyDescription[bodyHandles.Length];
             var constraintDescriptions = new CachedConstraint<T>[constraintHandles.Length];
-            Debug.Assert(simulation.Bodies.Count == bodyHandles.Length);
-            int originalConstraintCount = simulation.Solver.ConstraintCount;
+            Debug.Assert(simulation.Bodies.ActiveSet.Count == bodyHandles.Length);
+            int originalConstraintCount = simulation.Solver.CountConstraints();
             Debug.Assert(constraintHandles.Length == originalConstraintCount);
 
             //We'll need a mapping from the current handles back to the identity.
@@ -327,7 +330,7 @@ namespace Demos.SpecializedTests
 
             Validate(simulation, removedConstraints, removedBodies, bodyHandles.Length, originalConstraintCount);
 
-            var constraintActionProbability = originalConstraintCount > 0 ? 1 - (double)simulation.Bodies.Count / originalConstraintCount : 0;
+            var constraintActionProbability = originalConstraintCount > 0 ? 1 - (double)simulation.Bodies.ActiveSet.Count / originalConstraintCount : 0;
 
             var timer = Stopwatch.StartNew();
             for (int iterationIndex = 0; iterationIndex < iterations; ++iterationIndex)
@@ -377,9 +380,9 @@ namespace Demos.SpecializedTests
                 Debug.Assert(description.Equals(constraintDescriptions[i].Description), "Moving constraints around should not affect their descriptions.");
             }
 
-            var newConstraintCount = simulation.Solver.ConstraintCount;
+            var newConstraintCount = simulation.Solver.CountConstraints();
             Debug.Assert(newConstraintCount == originalConstraintCount, "Best have the same number of constraints if we actually added them all back!");
-            Debug.Assert(bodyHandles.Length == simulation.Bodies.Count, "And bodies, too!");
+            Debug.Assert(bodyHandles.Length == simulation.Bodies.ActiveSet.Count, "And bodies, too!");
 
             return timer.Elapsed.TotalSeconds;
         }

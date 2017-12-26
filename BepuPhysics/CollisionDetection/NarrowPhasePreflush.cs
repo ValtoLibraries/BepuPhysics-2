@@ -31,13 +31,13 @@ namespace BepuPhysics.CollisionDetection
 
         /// <summary>
         /// Adds constraints to the solver and constraint graph in an order determined by the previous sorts and with the help of the speculatively computed batch targets. Locally sequential.
-        /// Accesses main thread buffer pool when type batches are created or resize.
+        /// Accesses main thread buffer pool when type batches are created or resized.
         /// </summary>
         DeterministicConstraintAdd,
         /// <summary>
         /// Adds constraints to the solver and constraint graph in an order determined by the collision detection phase. If the collision detection phase is nondeterministic due to threading, then 
         /// this will result in nondeterministic adds to the solver.
-        /// Accesses main thread buffer pool when type batches are created or resize.
+        /// Accesses main thread buffer pool when type batches are created or resized.
         /// </summary>
         NondeterministicConstraintAdd,
         /// <summary>
@@ -217,7 +217,7 @@ namespace BepuPhysics.CollisionDetection
                     break;
                 case PreflushJobType.DeterministicConstraintAdd:
                     {
-                        for (int typeIndex = 0; typeIndex < PendingConstraintAddCache.ConstraintTypeCount; ++typeIndex)
+                        for (int typeIndex = 0; typeIndex < PairCache.CollisionConstraintTypeCount; ++typeIndex)
                         {
                             PendingConstraintAddCache.DeterministicallyAddType(typeIndex, overlapWorkers, ref sortedConstraints[typeIndex], Simulation, ref PairCache);
                         }
@@ -231,6 +231,16 @@ namespace BepuPhysics.CollisionDetection
         {
             var threadCount = threadDispatcher == null ? 1 : threadDispatcher.ThreadCount;
 
+            //Before we complete the addition of constraints, the pair cache's constraint handle->pair mapping must be made large enough to hold all existing constraints plus
+            //any that we are about to add. There's no guarantee that we will use them (some earlier handles may be available), but we have no good way to know ahead of time.
+            int newConstraintCount = 0;
+            for (int i = 0; i < threadCount; ++i)
+            {
+                newConstraintCount += overlapWorkers[i].PendingConstraints.CountConstraints();
+                //TODO: TEMP
+                overlapWorkers[i].PendingSetActivations.Dispose(overlapWorkers[i].Batcher.pool.SpecializeFor<int>());
+            }
+            PairCache.EnsureConstraintToPairMappingCapacity(Solver, Solver.HandlePool.HighestPossiblyClaimedId + 1 + newConstraintCount);
 
             if (threadCount > 1)
             {
@@ -257,26 +267,26 @@ namespace BepuPhysics.CollisionDetection
                 //Note that we create the sort jobs first. They tend to be individually much heftier than the constraint batch finder phase, and we'd like to be able to fill in the execution gaps.
                 if (deterministic)
                 {
-                    Pool.SpecializeFor<QuickList<SortConstraintTarget, Buffer<SortConstraintTarget>>>().Take(PendingConstraintAddCache.ConstraintTypeCount, out sortedConstraints);
-                    sortedConstraints.Clear(0, PendingConstraintAddCache.ConstraintTypeCount);
-                    for (int typeIndex = 0; typeIndex < PendingConstraintAddCache.ConstraintTypeCount; ++typeIndex)
+                    Pool.SpecializeFor<QuickList<SortConstraintTarget, Buffer<SortConstraintTarget>>>().Take(PairCache.CollisionConstraintTypeCount, out sortedConstraints);
+                    sortedConstraints.Clear(0, PairCache.CollisionConstraintTypeCount);
+                    for (int typeIndex = 0; typeIndex < PairCache.CollisionConstraintTypeCount; ++typeIndex)
                     {
-                        int typeCount = 0;
+                        int countInType = 0;
                         for (int workerIndex = 0; workerIndex < threadCount; ++workerIndex)
                         {
-                            typeCount += overlapWorkers[workerIndex].PendingConstraints.pendingConstraintsByType[typeIndex].Count;
+                            countInType += overlapWorkers[workerIndex].PendingConstraints.pendingConstraintsByType[typeIndex].Count;
                         }
-                        if (typeCount > 0)
+                        if (countInType > 0)
                         {
                             //Note that we don't actually add any constraint targets here- we let the actual worker threads do that. No reason not to, and it extracts a tiny bit of extra parallelism.
-                            QuickList<SortConstraintTarget, Buffer<SortConstraintTarget>>.Create(Pool.SpecializeFor<SortConstraintTarget>(), typeCount, out sortedConstraints[typeIndex]);
+                            QuickList<SortConstraintTarget, Buffer<SortConstraintTarget>>.Create(Pool.SpecializeFor<SortConstraintTarget>(), countInType, out sortedConstraints[typeIndex]);
                             preflushJobs.Add(new PreflushJob { Type = PreflushJobType.SortContactConstraintType, TypeIndex = typeIndex, WorkerCount = threadCount }, Pool.SpecializeFor<PreflushJob>());
                         }
                     }
                 }
                 const int maximumConstraintsPerJob = 16; //TODO: Empirical tuning.
 
-                for (int typeIndex = 0; typeIndex < PendingConstraintAddCache.ConstraintTypeCount; ++typeIndex)
+                for (int typeIndex = 0; typeIndex < PairCache.CollisionConstraintTypeCount; ++typeIndex)
                 {
                     for (int workerIndex = 0; workerIndex < threadCount; ++workerIndex)
                     {
@@ -349,7 +359,7 @@ namespace BepuPhysics.CollisionDetection
                 if (deterministic)
                 {
                     var targetPool = Pool.SpecializeFor<SortConstraintTarget>();
-                    for (int i = 0; i < PendingConstraintAddCache.ConstraintTypeCount; ++i)
+                    for (int i = 0; i < PairCache.CollisionConstraintTypeCount; ++i)
                     {
                         ref var typeList = ref sortedConstraints[i];
                         if (typeList.Span.Allocated)

@@ -47,10 +47,11 @@ namespace BepuPhysics
 
         unsafe void IntegrateBodies(int startIndex, int endIndex, float dt, ref BoundingBoxUpdater boundingBoxUpdater)
         {
-            ref var basePoses = ref bodies.Poses[0];
-            ref var baseVelocities = ref bodies.Velocities[0];
-            ref var baseLocalInertias = ref bodies.LocalInertias[0];
+            ref var basePoses = ref bodies.ActiveSet.Poses[0];
+            ref var baseVelocities = ref bodies.ActiveSet.Velocities[0];
+            ref var baseLocalInertias = ref bodies.ActiveSet.LocalInertias[0];
             ref var baseInertias = ref bodies.Inertias[0];
+            ref var baseActivity = ref bodies.ActiveSet.Activity[0];
             var halfDt = dt * 0.5f;
             for (int i = startIndex; i < endIndex; ++i)
             {
@@ -59,6 +60,26 @@ namespace BepuPhysics
                 ref var velocity = ref Unsafe.Add(ref baseVelocities, i);
                 var displacement = velocity.Linear * dt;
                 pose.Position += displacement;
+
+                //Update deactivation candidacy. Note that this comes before velocity integration. That means an object can go inactive with gravity-induced velocity.
+                //That is actually intended: when the narrowphase wakes up an island, the accumulated impulses in the island will be ready for gravity's influence.
+                //To do otherwise would hurt the solver's guess, reducing the quality of the solve and possibly causing a little bump.
+                //This is only relevant when the update order actually puts the deactivator after gravity. For ease of use, this fact may be ignored by the simulation update order.
+                ref var activity = ref Unsafe.Add(ref baseActivity, i);
+                var velocityHeuristic = velocity.Linear.LengthSquared() + velocity.Angular.LengthSquared();
+                if (velocityHeuristic > activity.DeactivationThreshold)
+                {
+                    activity.TimestepsUnderThresholdCount = 0;
+                    activity.DeactivationCandidate = false;
+                }
+                else
+                {
+                    ++activity.TimestepsUnderThresholdCount;
+                    if (activity.TimestepsUnderThresholdCount >= activity.MinimumTimestepsUnderThreshold)
+                    {
+                        activity.DeactivationCandidate = true;
+                    }
+                }
 
                 //Integrate orientation with the latest angular velocity.
                 //Note that we don't bother with conservation of angular momentum or the gyroscopic term or anything else- 
@@ -148,6 +169,7 @@ namespace BepuPhysics
         void Worker(int workerIndex)
         {
             var boundingBoxUpdater = new BoundingBoxUpdater(bodies, shapes, broadPhase, threadDispatcher.GetThreadMemoryPool(workerIndex), cachedDt);
+            var bodyCount = bodies.ActiveSet.Count;
             while (true)
             {
                 var jobIndex = Interlocked.Decrement(ref availableJobCount);
@@ -155,8 +177,8 @@ namespace BepuPhysics
                     break;
                 var start = jobIndex * bodiesPerJob;
                 var exclusiveEnd = start + bodiesPerJob;
-                if (exclusiveEnd > bodies.Count)
-                    exclusiveEnd = bodies.Count;
+                if (exclusiveEnd > bodyCount)
+                    exclusiveEnd = bodyCount;
                 Debug.Assert(exclusiveEnd > start, "Jobs that would involve bundles beyond the body count should not be created.");
 
                 IntegrateBodies(start, exclusiveEnd, cachedDt, ref boundingBoxUpdater);
@@ -167,6 +189,10 @@ namespace BepuPhysics
         }
         public void Update(float dt, BufferPool pool, IThreadDispatcher threadDispatcher = null)
         {
+            //For now, the pose integrator (as the first stage that references them in any way) is responsible for ensuring that the bodies have a reasonable size inertias buffer.
+            //Note that ownership (for purposes of final disposal) still belongs to the Bodies set.
+            bodies.ResizeIneritas();
+
             var workerCount = threadDispatcher == null ? 1 : threadDispatcher.ThreadCount;
             gravityDt = Gravity * dt;
             if (threadDispatcher != null)
@@ -183,11 +209,11 @@ namespace BepuPhysics
                 cachedDt = dt;
                 const int jobsPerWorker = 4;
                 var targetJobCount = workerCount * jobsPerWorker;
-                bodiesPerJob = bodies.Count / targetJobCount;
+                bodiesPerJob = bodies.ActiveSet.Count / targetJobCount;
                 if (bodiesPerJob == 0)
                     bodiesPerJob = 1;
-                availableJobCount = bodies.Count / bodiesPerJob;
-                if (bodiesPerJob * availableJobCount < bodies.Count)
+                availableJobCount = bodies.ActiveSet.Count / bodiesPerJob;
+                if (bodiesPerJob * availableJobCount < bodies.ActiveSet.Count)
                     ++availableJobCount;
                 this.threadDispatcher = threadDispatcher;
                 threadDispatcher.DispatchWorkers(workerDelegate);
@@ -196,7 +222,7 @@ namespace BepuPhysics
             else
             {
                 var boundingBoxUpdater = new BoundingBoxUpdater(bodies, shapes, broadPhase, pool, dt);
-                IntegrateBodies(0, bodies.Count, dt, ref boundingBoxUpdater);
+                IntegrateBodies(0, bodies.ActiveSet.Count, dt, ref boundingBoxUpdater);
                 boundingBoxUpdater.FlushAndDispose();
             }
 

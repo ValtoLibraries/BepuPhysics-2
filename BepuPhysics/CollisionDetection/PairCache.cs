@@ -34,13 +34,13 @@ namespace BepuPhysics.CollisionDetection
 
         public override string ToString()
         {
-            return $"<{A.Handle}, {B.Handle}>";
+            return $"<{A.Mobility}[{A.Handle}], {B.Mobility}[{B.Handle}]>";
         }
     }
 
     public struct CollidablePairComparer : IEqualityComparerRef<CollidablePair>
     {
-        //The order of collidables in the pair should not affect equality or hashing. The broad phase is not guaranteed to provide a reliable order.
+        //Note that pairs are sorted by handle, so we can assume order matters.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool Equals(ref CollidablePair a, ref CollidablePair b)
         {
@@ -72,7 +72,7 @@ namespace BepuPhysics.CollisionDetection
     }
 
 
-    public class PairCache
+    public partial class PairCache
     {
         public OverlapMapping Mapping;
 
@@ -84,7 +84,6 @@ namespace BepuPhysics.CollisionDetection
         /// atomic setting behavior for data types no larger than the native pointer size. Further, smaller sizes actually pay a higher price in terms of increased false sharing.
         /// Choice of data type is a balancing act between the memory bandwidth of the post analysis and the frequency of false sharing.
         /// </remarks>
-        //TODO: It's probably worth it to try out the other variants in a realistic test. False sharing is going to be less of an issue in the full narrowphase execution context.
         internal RawBuffer PairFreshness;
         BufferPool pool;
         int minimumPendingSize;
@@ -99,7 +98,7 @@ namespace BepuPhysics.CollisionDetection
         internal QuickList<WorkerPairCache, Array<WorkerPairCache>> NextWorkerCaches;
 
 
-        public PairCache(BufferPool pool, int minimumMappingSize = 2048, int minimumPendingSize = 128, int minimumPerTypeCapacity = 128)
+        public PairCache(BufferPool pool, int initialSetCapacity, int minimumMappingSize, int minimumPendingSize, int minimumPerTypeCapacity)
         {
             this.minimumPendingSize = minimumPendingSize;
             this.minimumPerTypeCapacity = minimumPerTypeCapacity;
@@ -107,6 +106,7 @@ namespace BepuPhysics.CollisionDetection
             OverlapMapping.Create(
                 pool.SpecializeFor<CollidablePair>(), pool.SpecializeFor<CollidablePairPointers>(), pool.SpecializeFor<int>(),
                 SpanHelper.GetContainingPowerOf2(minimumMappingSize), 3, out Mapping);
+            ResizeSetsCapacity(initialSetCapacity, 0);
         }
 
         public void Prepare(IThreadDispatcher threadDispatcher = null)
@@ -120,8 +120,8 @@ namespace BepuPhysics.CollisionDetection
                 if (constraint > maximumConstraintTypeCount)
                     maximumConstraintTypeCount = constraint;
             }
-            QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), maximumConstraintTypeCount, out var minimumSizesPerConstraintType);
-            QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), maximumCollisionTypeCount, out var minimumSizesPerCollisionType);
+            QuickList<PreallocationSizes, Buffer<PreallocationSizes>>.Create(pool.SpecializeFor<PreallocationSizes>(), maximumConstraintTypeCount, out var minimumSizesPerConstraintType);
+            QuickList<PreallocationSizes, Buffer<PreallocationSizes>>.Create(pool.SpecializeFor<PreallocationSizes>(), maximumCollisionTypeCount, out var minimumSizesPerCollisionType);
             //Since the minimum size accumulation builds the minimum size incrementally, bad data within the array can corrupt the result- we must clear it.
             minimumSizesPerConstraintType.Span.Clear(0, minimumSizesPerConstraintType.Span.Length);
             minimumSizesPerCollisionType.Span.Clear(0, minimumSizesPerCollisionType.Span.Length);
@@ -158,8 +158,8 @@ namespace BepuPhysics.CollisionDetection
             {
                 NextWorkerCaches[0] = new WorkerPairCache(0, pool, ref minimumSizesPerConstraintType, ref minimumSizesPerCollisionType, pendingSize, minimumPerTypeCapacity);
             }
-            minimumSizesPerConstraintType.Dispose(pool.SpecializeFor<int>());
-            minimumSizesPerCollisionType.Dispose(pool.SpecializeFor<int>());
+            minimumSizesPerConstraintType.Dispose(pool.SpecializeFor<PreallocationSizes>());
+            minimumSizesPerCollisionType.Dispose(pool.SpecializeFor<PreallocationSizes>());
 
             //Create the pair freshness array for the existing overlaps.
             pool.Take(Mapping.Count, out PairFreshness);
@@ -167,6 +167,25 @@ namespace BepuPhysics.CollisionDetection
             //There is a small chance that multithreading this would be useful in larger simulations- but it would be very, very close.
             PairFreshness.Clear(0, Mapping.Count);
 
+        }
+
+
+        internal void EnsureConstraintToPairMappingCapacity(Solver solver, int targetCapacity)
+        {
+            targetCapacity = Math.Max(solver.HandlePool.HighestPossiblyClaimedId + 1, targetCapacity);
+            if (ConstraintHandleToPair.Length < targetCapacity)
+            {
+                pool.SpecializeFor<CollisionPairLocation>().Resize(ref ConstraintHandleToPair, targetCapacity, ConstraintHandleToPair.Length);
+            }
+        }
+
+        internal void ResizeConstraintToPairMappingCapacity(Solver solver, int targetCapacity)
+        {
+            targetCapacity = BufferPool<CollisionPairLocation>.GetLowestContainingElementCount(Math.Max(solver.HandlePool.HighestPossiblyClaimedId + 1, targetCapacity));
+            if (ConstraintHandleToPair.Length != targetCapacity)
+            {
+                pool.SpecializeFor<CollisionPairLocation>().Resize(ref ConstraintHandleToPair, targetCapacity, Math.Min(targetCapacity, ConstraintHandleToPair.Length));
+            }
         }
 
 
@@ -200,10 +219,10 @@ namespace BepuPhysics.CollisionDetection
 
             jobs.Add(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.FlushPairCacheChanges }, pool.SpecializeFor<NarrowPhaseFlushJob>());
         }
-        public void FlushMappingChanges()
+        public unsafe void FlushMappingChanges()
         {
             //Flush all pending adds from the new set.
-            //TODO: Note that this phase accesses no shared memory- it's all pair cache local, and no pool accesses are made.
+            //Note that this phase accesses no shared memory- it's all pair cache local, and no pool accesses are made.
             //That means we could run it as a job alongside solver constraint removal. That's good, because adding and removing to the hash tables isn't terribly fast.  
             //(On the order of 10-100 nanoseconds per operation, so in pathological cases, it can start showing up in profiles.)
             for (int i = 0; i < NextWorkerCaches.Count; ++i)
@@ -253,6 +272,30 @@ namespace BepuPhysics.CollisionDetection
 
         }
 
+        internal void Clear()
+        {
+            for (int i = 0; i < workerCaches.Count; ++i)
+            {
+                workerCaches[i].Dispose();
+            }
+            workerCaches.Count = 0;
+            for (int i = 1; i < InactiveSets.Length; ++i)
+            {
+                if (InactiveSets[i].Allocated)
+                {
+                    InactiveSets[i].Dispose(pool);
+                }
+            }
+#if DEBUG
+            if (NextWorkerCaches.Span.Allocated)
+            {
+                for (int i = 0; i < NextWorkerCaches.Span.Length; ++i)
+                {
+                    Debug.Assert(NextWorkerCaches[i].Equals(default(WorkerPairCache)), "Outside of the execution of the narrow phase, the 'next' caches should not be allocated.");
+                }
+            }
+#endif
+        }
 
         public void Dispose()
         {
@@ -262,13 +305,28 @@ namespace BepuPhysics.CollisionDetection
             }
             //Note that we do not need to dispose the worker cache arrays themselves- they were just arrays pulled out of a passthrough pool.
 #if DEBUG
-            for (int i = 0; i < NextWorkerCaches.Count; ++i)
+            if (NextWorkerCaches.Span.Allocated)
             {
-                Debug.Assert(NextWorkerCaches[i].Equals(default(WorkerPairCache)), "Outside of the execution of the narrow phase, the 'next' caches should not be allocated.");
+                for (int i = 0; i < NextWorkerCaches.Span.Length; ++i)
+                {
+                    Debug.Assert(NextWorkerCaches[i].Equals(default(WorkerPairCache)), "Outside of the execution of the narrow phase, the 'next' caches should not be allocated.");
+                }
             }
 #endif
             Mapping.Dispose(pool.SpecializeFor<CollidablePair>(), pool.SpecializeFor<CollidablePairPointers>(), pool.SpecializeFor<int>());
+            for (int i = 1; i < InactiveSets.Length; ++i)
+            {
+                ref var set = ref InactiveSets[i];
+                if (set.Allocated)
+                    set.Dispose(pool);
+            }
+            pool.SpecializeFor<InactiveSet>().Return(ref InactiveSets);
+            //The constraint handle to pair is partially slaved to the constraint handle capacity. 
+            //It gets ensured every frame, but the gap between construction and the first frame could leave it uninitialized.
+            if (ConstraintHandleToPair.Allocated)
+                pool.SpecializeFor<CollisionPairLocation>().Return(ref ConstraintHandleToPair);
         }
+
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int IndexOf(ref CollidablePair pair)
@@ -312,34 +370,50 @@ namespace BepuPhysics.CollisionDetection
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal unsafe PairCacheIndex Add<TConstraintCache, TCollisionCache>(int workerIndex, ref CollidablePair pair,
-            ref TCollisionCache collisionCache, ref TConstraintCache constraintCache, int manifoldTypeAsConstraintType)
+            ref TCollisionCache collisionCache, ref TConstraintCache constraintCache)
             where TConstraintCache : IPairCacheEntry
             where TCollisionCache : IPairCacheEntry
         {
             //Note that we do not have to set any freshness bytes here; using this path means there exists no previous overlap to remove anyway.
-            return NextWorkerCaches[workerIndex].Add(ref pair, ref collisionCache, ref constraintCache, manifoldTypeAsConstraintType);
+            return NextWorkerCaches[workerIndex].Add(ref pair, ref collisionCache, ref constraintCache);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal unsafe void Update<TConstraintCache, TCollisionCache>(int workerIndex, int pairIndex, ref CollidablePairPointers pointers,
-            ref TCollisionCache collisionCache, ref TConstraintCache constraintCache, int manifoldTypeAsConstraintType)
+            ref TCollisionCache collisionCache, ref TConstraintCache constraintCache)
             where TConstraintCache : IPairCacheEntry
             where TCollisionCache : IPairCacheEntry
         {
             //We're updating an existing pair, so we should prevent this pair from being removed.
             PairFreshness[pairIndex] = 0xFF;
-            NextWorkerCaches[workerIndex].Update(ref pointers, ref collisionCache, ref constraintCache, manifoldTypeAsConstraintType);
+            NextWorkerCaches[workerIndex].Update(ref pointers, ref collisionCache, ref constraintCache);
         }
-
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal int GetContactCount(int constraintType)
         {
             //TODO: Very likely that we'll expand the nonconvex manifold maximum to 8 contacts, so this will need to be adjusted later.
-            return constraintType & 0x3;
+            return 1 + (constraintType & 0x3);
         }
 
-        internal unsafe void GatherOldImpulses(int constraintType, ref ConstraintReference constraintReference, float* oldImpulses)
+        /// <summary>
+        /// Gets whether a constraint type id maps to a contact constraint.
+        /// </summary>
+        /// <param name="constraintTypeId">Id of the constraint to check.</param>
+        /// <returns>True if the type id refers to a contact constraint. False otherwise.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool IsContactBatch(int constraintTypeId)
+        {
+            //TODO: If the nonconvex contact count expands to 8, this will have to change.
+            return constraintTypeId < 16;
+        }
+
+
+
+        //TODO: If we add in nonconvex manifolds with up to 8 contacts, this will need to change- we preallocate enough space to hold all possible narrowphase generated types.
+        public const int CollisionConstraintTypeCount = 16;
+        public const int CollisionTypeCount = 16;
+        internal unsafe void GatherOldImpulses(ref ConstraintReference constraintReference, float* oldImpulses)
         {
             //Constraints cover 16 possible cases:
             //1-4 contacts: 0x3
@@ -350,7 +424,7 @@ namespace BepuPhysics.CollisionDetection
             //TODO: Note that we do not modify the friction accumulated impulses. This is just for simplicity- the impact of accumulated impulses on friction *should* be relatively
             //hard to notice compared to penetration impulses. We should, however, test this assumption.
             BundleIndexing.GetBundleIndices(constraintReference.IndexInTypeBatch, out var bundleIndex, out var inner);
-            switch (constraintType)
+            switch (constraintReference.TypeBatch.TypeId)
             {
                 //1 body
                 //Convex
@@ -382,6 +456,7 @@ namespace BepuPhysics.CollisionDetection
                         //1 contact
                     }
                     break;
+
                 case 4 + 1:
                     {
                         //2 contacts
@@ -447,7 +522,7 @@ namespace BepuPhysics.CollisionDetection
             }
         }
 
-        internal void ScatterNewImpulses<TContactImpulses>(int constraintType, ref ConstraintReference constraintReference, ref TContactImpulses contactImpulses)
+        internal void ScatterNewImpulses<TContactImpulses>(ref ConstraintReference constraintReference, ref TContactImpulses contactImpulses)
         {
             //Constraints cover 16 possible cases:
             //1-4 contacts: 0x3
@@ -458,7 +533,7 @@ namespace BepuPhysics.CollisionDetection
             //TODO: Note that we do not modify the friction accumulated impulses. This is just for simplicity- the impact of accumulated impulses on friction *should* be relatively
             //hard to notice compared to penetration impulses. We should, however, test this assumption.
             BundleIndexing.GetBundleIndices(constraintReference.IndexInTypeBatch, out var bundleIndex, out var inner);
-            switch (constraintType)
+            switch (constraintReference.TypeBatch.TypeId)
             {
                 //1 body
                 //Convex
@@ -557,17 +632,17 @@ namespace BepuPhysics.CollisionDetection
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe void* GetOldConstraintCachePointer(int pairIndex)
+        internal unsafe void* GetOldConstraintCachePointer(int pairIndex)
         {
             ref var constraintCacheIndex = ref Mapping.Values[pairIndex].ConstraintCache;
-            return workerCaches[constraintCacheIndex.Worker].GetConstraintCachePointer(constraintCacheIndex);
+            return workerCaches[constraintCacheIndex.Cache].GetConstraintCachePointer(constraintCacheIndex);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe int GetOldConstraintHandle(int pairIndex)
+        internal unsafe int GetOldConstraintHandle(int pairIndex)
         {
             ref var constraintCacheIndex = ref Mapping.Values[pairIndex].ConstraintCache;
-            return *(int*)workerCaches[constraintCacheIndex.Worker].GetConstraintCachePointer(constraintCacheIndex);
+            return *(int*)workerCaches[constraintCacheIndex.Cache].GetConstraintCachePointer(constraintCacheIndex);
         }
 
         /// <summary>
@@ -578,27 +653,32 @@ namespace BepuPhysics.CollisionDetection
         /// <param name="impulses">Warm starting impulses to apply to the contact constraint.</param>
         /// <param name="constraintCacheIndex">Index of the constraint cache to update.</param>
         /// <param name="constraintHandle">Constraint handle associated with the constraint cache being updated.</param>
+        /// <param name="pair">Collidable pair associated with the new constraint.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal unsafe void CompleteConstraintAdd<TContactImpulses>(Solver solver, ref TContactImpulses impulses, PairCacheIndex constraintCacheIndex, int constraintHandle)
+        internal unsafe void CompleteConstraintAdd<TContactImpulses>(Solver solver, ref TContactImpulses impulses, PairCacheIndex constraintCacheIndex,
+            int constraintHandle, ref CollidablePair pair)
         {
             //Note that the update is being directed to the *next* worker caches. We have not yet performed the flush that swaps references.
             //Note that this assumes that the constraint handle is stored in the first 4 bytes of the constraint cache.
-            *(int*)NextWorkerCaches[constraintCacheIndex.Worker].GetConstraintCachePointer(constraintCacheIndex) = constraintHandle;
+            *(int*)NextWorkerCaches[constraintCacheIndex.Cache].GetConstraintCachePointer(constraintCacheIndex) = constraintHandle;
             solver.GetConstraintReference(constraintHandle, out var reference);
-            ScatterNewImpulses(constraintCacheIndex.Type, ref reference, ref impulses);
+            ScatterNewImpulses(ref reference, ref impulses);
+            //This mapping entry had to be deferred until now because no constraint handle was known until now. Now that we have it,
+            //we can fill in the pointers back to the overlap mapping.
+            ConstraintHandleToPair[constraintHandle].Pair = pair;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe ref TConstraintCache GetConstraintCache<TConstraintCache>(PairCacheIndex constraintCacheIndex)
         {
             //Note that these refer to the previous workerCaches, not the nextWorkerCaches. We read from these caches during the narrowphase to redistribute impulses.
-            return ref Unsafe.AsRef<TConstraintCache>(workerCaches[constraintCacheIndex.Worker].GetConstraintCachePointer(constraintCacheIndex));
+            return ref Unsafe.AsRef<TConstraintCache>(workerCaches[constraintCacheIndex.Cache].GetConstraintCachePointer(constraintCacheIndex));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe ref TCollisionData GetCollisionData<TCollisionData>(PairCacheIndex index) where TCollisionData : struct, IPairCacheEntry
         {
-            return ref Unsafe.AsRef<TCollisionData>(workerCaches[index.Worker].GetCollisionCachePointer(index));
+            return ref Unsafe.AsRef<TCollisionData>(workerCaches[index.Cache].GetCollisionCachePointer(index));
         }
 
     }

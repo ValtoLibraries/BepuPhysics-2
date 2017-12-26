@@ -15,24 +15,35 @@ namespace Demos
             camera.Position = new Vector3(-3f, 3, -3f);
             camera.Yaw = MathHelper.Pi * 3f / 4;
             camera.Pitch = MathHelper.Pi * 0.1f;
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks());
+            Simulation = Simulation.Create(BufferPool, new TestCallbacks(),
+            new SimulationAllocationSizes
+            {
+                Bodies = 1,
+                ConstraintCountPerBodyEstimate = 1,
+                Constraints = 1,
+                ConstraintsPerTypeBatch = 1,
+                Islands = 1,
+                ShapesPerType = 1,
+                Statics = 1
+            });
+
             var shape = new Sphere(0.5f);
             var shapeIndex = Simulation.Shapes.Add(ref shape);
-            const int width = 8;
-            const int height = 3;
-            const int length = 8;
-            var latticeSpacing = 1.1f;
+            const int width = 2;
+            const int height = 32;
+            const int length = 2;
+            var latticeSpacing = 3.1f;
             var latticeOffset = -0.5f * width * latticeSpacing;
             SimulationSetup.BuildLattice(
-                new RegularGridBuilder(new Vector3(latticeSpacing, 1.0f, latticeSpacing), new Vector3(latticeOffset, 10, latticeOffset), 1f / (shape.Radius * shape.Radius * 2 / 3), shapeIndex),
+                new RegularGridBuilder(new Vector3(latticeSpacing, 1.5f, latticeSpacing), new Vector3(latticeOffset, 10, latticeOffset), 1f / (shape.Radius * shape.Radius * 2 / 3), shapeIndex),
                 new ConstraintlessLatticeBuilder(),
                 width, height, length, Simulation, out var bodyHandles, out var constraintHandles);
             Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
-            Simulation.Deterministic = true;
+            Simulation.Deterministic = false;
 
             var staticShape = new Sphere(4);
             var staticShapeIndex = Simulation.Shapes.Add(ref staticShape);
-            const int staticGridWidthInSpheres = 64;
+            const int staticGridWidthInSpheres = 100;
             const float staticSpacing = 6;
             for (int i = 0; i < staticGridWidthInSpheres; ++i)
             {
@@ -55,7 +66,7 @@ namespace Demos
                             Orientation = BepuUtilities.Quaternion.Identity
                         }
                     };
-                    Simulation.Add(ref staticDescription);
+                    Simulation.Statics.Add(ref staticDescription);
                 }
             }
 
@@ -65,14 +76,25 @@ namespace Demos
 
             //Simulation.Solver.IterationCount = 100;
 
-            Console.WriteLine(Simulation.Solver.ConstraintCount);
-
         }
 
         int frameIndex;
         public override void Update(Input input, float dt)
         {
             //Console.WriteLine($"Preframe {frameIndex++}, mapping count: {Simulation.NarrowPhase.PairCache.Mapping.Count}");
+
+            if (input.WasPushed(OpenTK.Input.Key.P))
+            {
+                for (int handle = 0; handle < Simulation.Bodies.HandleToLocation.Length; ++handle)
+                {
+                    ref var bodyLocation = ref Simulation.Bodies.HandleToLocation[handle];
+                    if(bodyLocation.SetIndex > 0)
+                    {
+                        Simulation.Activator.ActivateBody(handle);
+                        //break;
+                    }
+                }
+            }
 
             //for (int i = 0; i < Simulation.Bodies.BodyCount; ++i)
             //{

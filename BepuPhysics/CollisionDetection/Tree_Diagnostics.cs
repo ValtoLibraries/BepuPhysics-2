@@ -79,8 +79,9 @@ namespace BepuPhysics.CollisionDetection
             var badMaxValue = new Vector3(float.MinValue);
             var mergedMin = badMinValue; //Note- using isolated vectors instead of actual BoundingBox here to avoid a compiler bug: https://github.com/dotnet/coreclr/issues/12950
             var mergedMax = badMaxValue;
-            Debug.Assert(node->ChildCount == Math.Min(leafCount, 2));
-            for (int i = 0; i < node->ChildCount; ++i)
+            var childCount = Math.Min(leafCount, 2);
+            Debug.Assert(node->ChildCount == childCount);
+            for (int i = 0; i < childCount; ++i)
             {
                 ref var child = ref children[i];
                 if (child.Min == badMinValue || child.Max == badMaxValue)
@@ -102,9 +103,16 @@ namespace BepuPhysics.CollisionDetection
                     {
                         throw new Exception($"Bad leaf count on {nodeIndex} child {i}, it's a leaf but leafCount is {child.LeafCount}.");
                     }
+                    var leafIndex = Encode(child.Index);
+                    if (leafIndex < 0 || leafIndex >= leafCount)
+                        throw new Exception("Bad node-contained leaf index.");
+                    if (leaves[leafIndex].NodeIndex != nodeIndex || leaves[leafIndex].ChildIndex != i)
+                    {
+                        throw new Exception("Mismatch between node-held leaf pointer and leaf's pointers.");
+                    }
                 }
             }
-            
+
             if (expectedParentIndex >= 0 && //Not a root node,
                 (mergedMin != expectedMin || mergedMax != expectedMax))
             {
@@ -150,7 +158,7 @@ namespace BepuPhysics.CollisionDetection
             {
                 throw new Exception($"Invalid node count of {nodeCount}, larger than nodes array length {Nodes.Length}.");
             }
-            if (LeafCount > 0 && (nodes[0].IndexInParent != -1 || nodes[0].IndexInParent != -1))
+            if (LeafCount > 0 && (nodes[0].Parent != -1 || nodes[0].IndexInParent != -1))
             {
                 throw new Exception($"Invalid parent pointers on root.");
             }

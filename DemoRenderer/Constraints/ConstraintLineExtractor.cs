@@ -7,39 +7,75 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using System.Diagnostics;
 using BepuUtilities;
+using System.Numerics;
+using BepuPhysics.CollisionDetection;
 
 namespace DemoRenderer.Constraints
 {
-    interface IConstraintLineExtractor<TBodyReferences, TPrestep>
+    unsafe interface IConstraintLineExtractor<TPrestep>
     {
         int LinesPerConstraint { get; }
 
-        void ExtractLines(ref TPrestep prestepBundle, ref TBodyReferences referencesBundle, int innerIndex, Bodies bodies, ref QuickList<LineInstance, Array<LineInstance>> lines);
+        void ExtractLines(ref TPrestep prestepBundle, int innerIndex, int setIndex, int* bodyLocations, Bodies bodies, ref Vector3 tint, ref QuickList<LineInstance, Array<LineInstance>> lines);
     }
     abstract class TypeLineExtractor
     {
         public abstract int LinesPerConstraint { get; }
-        public abstract void ExtractLines(Bodies bodies, ref TypeBatch typeBatch, int constraintStart, int constraintCount, ref QuickList<LineInstance, Array<LineInstance>> lines);
+        public abstract void ExtractLines(Bodies bodies, int setIndex, ref TypeBatch typeBatch, int constraintStart, int constraintCount, ref QuickList<LineInstance, Array<LineInstance>> lines);
     }
 
     class TypeLineExtractor<T, TBodyReferences, TPrestep, TProjection, TAccumulatedImpulses> : TypeLineExtractor
-        where T : struct, IConstraintLineExtractor<TBodyReferences, TPrestep>
+        where T : struct, IConstraintLineExtractor<TPrestep>
     {
         public override int LinesPerConstraint => default(T).LinesPerConstraint;
-        public override void ExtractLines(Bodies bodies, ref TypeBatch typeBatch, int constraintStart, int constraintCount,
+        public unsafe override void ExtractLines(Bodies bodies, int setIndex, ref TypeBatch typeBatch, int constraintStart, int constraintCount,
             ref QuickList<LineInstance, Array<LineInstance>> lines)
         {
             ref var prestepStart = ref Buffer<TPrestep>.Get(ref typeBatch.PrestepData, 0);
             ref var referencesStart = ref Buffer<TBodyReferences>.Get(ref typeBatch.BodyReferences, 0);
+            //For now, we assume that TBodyReferences is always a series of contiguous Vector<int> values.
+            //We can extract each body by abusing the memory layout.
+            var bodyCount = Unsafe.SizeOf<TBodyReferences>() / Unsafe.SizeOf<Vector<int>>();
+            Debug.Assert(bodyCount * Unsafe.SizeOf<Vector<int>>() == Unsafe.SizeOf<TBodyReferences>());
+            var bodyIndices = stackalloc int[bodyCount];
             var extractor = default(T);
 
             var constraintEnd = constraintStart + constraintCount;
-            for (int i = constraintStart; i < constraintEnd; ++i)
+            if (setIndex == 0)
             {
-                BundleIndexing.GetBundleIndices(i, out var bundleIndex, out var innerIndex);
-                ref var prestepBundle = ref Unsafe.Add(ref prestepStart, bundleIndex);
-                ref var referencesBundle = ref Unsafe.Add(ref referencesStart, bundleIndex);
-                extractor.ExtractLines(ref prestepBundle, ref referencesBundle, innerIndex, bodies, ref lines);
+                var tint = new Vector3(1, 1, 1);
+                for (int i = constraintStart; i < constraintEnd; ++i)
+                {
+                    BundleIndexing.GetBundleIndices(i, out var bundleIndex, out var innerIndex);
+                    ref var prestepBundle = ref Unsafe.Add(ref prestepStart, bundleIndex);
+                    ref var referencesBundle = ref Unsafe.Add(ref referencesStart, bundleIndex);
+                    ref var firstReference = ref Unsafe.As<TBodyReferences, Vector<int>>(ref referencesBundle);
+                    for (int j = 0; j < bodyCount; ++j)
+                    {
+                        //Active set constraint body references refer directly to the body index.
+                        bodyIndices[j] = GatherScatter.Get(ref Unsafe.Add(ref firstReference, j), innerIndex);
+                    }
+                    extractor.ExtractLines(ref prestepBundle, innerIndex, setIndex, bodyIndices, bodies, ref tint, ref lines);
+                }
+            }
+            else
+            {
+                var tint = new Vector3(0.4f, 0.4f, 0.8f);
+                for (int i = constraintStart; i < constraintEnd; ++i)
+                {
+                    BundleIndexing.GetBundleIndices(i, out var bundleIndex, out var innerIndex);
+                    ref var prestepBundle = ref Unsafe.Add(ref prestepStart, bundleIndex);
+                    ref var referencesBundle = ref Unsafe.Add(ref referencesStart, bundleIndex);
+                    ref var firstReference = ref Unsafe.As<TBodyReferences, Vector<int>>(ref referencesBundle);
+                    for (int j = 0; j < bodyCount; ++j)
+                    {
+                        //Inactive constraints store body references in the form of handles, so we have to follow the indirection.
+                        var bodyHandle = GatherScatter.Get(ref Unsafe.Add(ref firstReference, j), innerIndex);
+                        Debug.Assert(bodies.HandleToLocation[bodyHandle].SetIndex == setIndex);
+                        bodyIndices[j] = bodies.HandleToLocation[bodyHandle].Index;
+                    }
+                    extractor.ExtractLines(ref prestepBundle, innerIndex, setIndex, bodyIndices, bodies, ref tint, ref lines);
+                }
             }
         }
     }
@@ -49,9 +85,10 @@ namespace DemoRenderer.Constraints
         TypeLineExtractor[] lineExtractors;
         const int jobsPerThread = 4;
         QuickList<ThreadJob, Array<ThreadJob>> jobs;
-
+        
         struct ThreadJob
         {
+            public int SetIndex;
             public int BatchIndex;
             public int TypeBatchIndex;
             public int ConstraintStart;
@@ -86,42 +123,45 @@ namespace DemoRenderer.Constraints
         private void ExecuteJob(int jobIndex)
         {
             ref var job = ref jobs[jobIndex];
-            ref var typeBatch = ref solver.Batches[job.BatchIndex].TypeBatches[job.TypeBatchIndex];
-            Debug.Assert(lineExtractors[typeBatch.TypeId] != null, "Jobs should only be created for types which are available and active.");
-            lineExtractors[typeBatch.TypeId].ExtractLines(bodies, ref typeBatch, job.ConstraintStart, job.ConstraintCount, ref job.jobLines);
+            ref var typeBatch = ref solver.Sets[job.SetIndex].Batches[job.BatchIndex].TypeBatches[job.TypeBatchIndex];
+            Debug.Assert(lineExtractors[typeBatch.TypeId] != null, "Jobs should only be created for types which are registered and used.");
+            lineExtractors[typeBatch.TypeId].ExtractLines(bodies, job.SetIndex, ref typeBatch, job.ConstraintStart, job.ConstraintCount, ref job.jobLines);
         }
 
-        bool IsContactBatch(int typeId)
-        {
-            //TODO: If the nonconvex contact count expands to 8, this will have to change.
-            return typeId < 16;
-        }
 
         internal void AddInstances(Bodies bodies, Solver solver, bool showConstraints, bool showContacts, ref QuickList<LineInstance, Array<LineInstance>> lines, ParallelLooper looper)
         {
             int neededLineCapacity = lines.Count;
             jobs.Count = 0;
             var jobPool = new PassthroughArrayPool<ThreadJob>();
-            for (int batchIndex = 0; batchIndex < solver.Batches.Count; ++batchIndex)
+            for (int setIndex = 0; setIndex < solver.Sets.Length; ++setIndex)
             {
-                ref var batch = ref solver.Batches[batchIndex];
-                for (int typeBatchIndex = 0; typeBatchIndex < batch.TypeBatches.Count; ++typeBatchIndex)
+                ref var set = ref solver.Sets[setIndex];
+                if (set.Allocated)
                 {
-                    ref var typeBatch = ref batch.TypeBatches[typeBatchIndex];
-                    var extractor = lineExtractors[typeBatch.TypeId];
-                    var isContactBatch = IsContactBatch(typeBatch.TypeId);
-                    if (extractor != null && ((isContactBatch && showContacts) || (!isContactBatch && showConstraints)))
+                    for (int batchIndex = 0; batchIndex < set.Batches.Count; ++batchIndex)
                     {
-                        jobs.Add(new ThreadJob
+                        ref var batch = ref set.Batches[batchIndex];
+                        for (int typeBatchIndex = 0; typeBatchIndex < batch.TypeBatches.Count; ++typeBatchIndex)
                         {
-                            BatchIndex = batchIndex,
-                            TypeBatchIndex = typeBatchIndex,
-                            ConstraintStart = 0,
-                            ConstraintCount = typeBatch.ConstraintCount,
-                            LineStart = neededLineCapacity,
-                            LinesPerConstraint = extractor.LinesPerConstraint
-                        }, jobPool);
-                        neededLineCapacity += extractor.LinesPerConstraint * typeBatch.ConstraintCount;
+                            ref var typeBatch = ref batch.TypeBatches[typeBatchIndex];
+                            var extractor = lineExtractors[typeBatch.TypeId];
+                            var isContactBatch = PairCache.IsContactBatch(typeBatch.TypeId);
+                            if (extractor != null && ((isContactBatch && showContacts) || (!isContactBatch && showConstraints)))
+                            {
+                                jobs.Add(new ThreadJob
+                                {
+                                    SetIndex = setIndex,
+                                    BatchIndex = batchIndex,
+                                    TypeBatchIndex = typeBatchIndex,
+                                    ConstraintStart = 0,
+                                    ConstraintCount = typeBatch.ConstraintCount,
+                                    LineStart = neededLineCapacity,
+                                    LinesPerConstraint = extractor.LinesPerConstraint
+                                }, jobPool);
+                                neededLineCapacity += extractor.LinesPerConstraint * typeBatch.ConstraintCount;
+                            }
+                        }
                     }
                 }
             }

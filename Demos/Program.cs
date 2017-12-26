@@ -13,7 +13,8 @@ namespace Demos
     {
         static void Main(string[] args)
         {
-            ConstraintDescriptionMappingTests.Test();
+            //OperatorCodegenTests.Test();
+            //ConstraintDescriptionMappingTests.Test();
             //CollidablePairComparerTests.Test();
             //HeadlessDemo.Simple();
             //BatchedCollisionTests.Test();
@@ -30,13 +31,13 @@ namespace Demos
             //InterlockedOverheadTests.Test();
             //LocalsinitCodegen.Test();
             //AutoTester.Test();
-            //ContactManifoldConvergenceTests.Test();
             //BallSocketConvergenceTests.Test();
             //MemoryResizeTests.Test();
             //DisposeTests.Test();
             //ConstraintCacheOptimizationTests.Test();
             //SortTest.Test();
             //SpanCodegenTests.Test();
+            //IntertreeThreadingTests.Test();
             //return;
 
             //Console.ReadKey();

@@ -57,6 +57,11 @@ namespace BepuPhysics
                 TypeIndexToTypeBatchIndex[i] = -1;
             }
         }
+        internal void EnsureTypeMapSize(BufferPool pool, int targetSize)
+        {
+            if (targetSize > TypeIndexToTypeBatchIndex.Length)
+                ResizeTypeMap(pool, targetSize);
+        }
 
         [Conditional("DEBUG")]
         void ValidateTypeBatchMappings()
@@ -90,7 +95,7 @@ namespace BepuPhysics
             return ref TypeBatches[typeBatchIndex];
         }
 
-        ref TypeBatch CreateNewTypeBatch(int typeId, TypeProcessor typeProcessor, int initialCapacity, BufferPool pool)
+        internal ref TypeBatch CreateNewTypeBatch(int typeId, TypeProcessor typeProcessor, int initialCapacity, BufferPool pool)
         {
             var newIndex = TypeBatches.Count;
             TypeBatches.EnsureCapacity(TypeBatches.Count + 1, pool.SpecializeFor<TypeBatch>());
@@ -123,7 +128,7 @@ namespace BepuPhysics
             }
         }
 
-        public unsafe void Allocate(int handle, ref int constraintBodyHandles, int bodyCount, ref HandleSet existingHandles, Bodies bodies,
+        public unsafe void Allocate(int handle, ref int constraintBodyHandles, int bodyCount, ref IndexSet existingHandles, Bodies bodies,
             int typeId, TypeProcessor typeProcessor, int initialCapacity, BufferPool pool, out ConstraintReference reference)
         {
             //Add all the constraint's body handles to the batch we found (or created) to block future references to the same bodies.
@@ -133,7 +138,9 @@ namespace BepuPhysics
             {
                 var bodyHandle = Unsafe.Add(ref constraintBodyHandles, j);
                 existingHandles.Add(bodyHandle, pool);
-                bodyIndices[j] = bodies.HandleToLocation[bodyHandle];
+                ref var location = ref bodies.HandleToLocation[bodyHandle];
+                Debug.Assert(location.SetIndex == 0, "Creating a new constraint should have forced the connected bodies awake.");
+                bodyIndices[j] = location.Index;
             }
             ref var typeBatch = ref GetOrCreateTypeBatch(typeId, typeProcessor, initialCapacity, pool);
             reference = new ConstraintReference(ref typeBatch, typeProcessor.Allocate(ref typeBatch, handle, bodyIndices, pool));
@@ -148,14 +155,14 @@ namespace BepuPhysics
         }
 
 
-        unsafe struct BodyHandleRemover : IForEach<int>
+        unsafe struct ActiveBodyHandleRemover : IForEach<int>
         {
             public Bodies Bodies;
             //TODO: When blittable rolls around, we should be able to de-void this.
             public void* Handles;
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public BodyHandleRemover(Bodies bodies, ref HandleSet handles)
+            public ActiveBodyHandleRemover(Bodies bodies, ref IndexSet handles)
             {
                 Bodies = bodies;
                 Handles = Unsafe.AsPointer(ref handles);
@@ -164,7 +171,7 @@ namespace BepuPhysics
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public void LoopBody(int bodyIndex)
             {
-                Unsafe.AsRef<HandleSet>(Handles).Remove(Bodies.IndexToHandle[bodyIndex]);
+                Unsafe.AsRef<IndexSet>(Handles).Remove(Bodies.ActiveSet.IndexToHandle[bodyIndex]);
             }
         }
 
@@ -187,12 +194,12 @@ namespace BepuPhysics
             ValidateTypeBatchMappings();
         }
 
-        public unsafe void RemoveWithHandles(int constraintTypeId, int indexInTypeBatch, ref HandleSet handles, Solver solver)
+        public unsafe void RemoveWithHandles(int constraintTypeId, int indexInTypeBatch, ref IndexSet handles, Solver solver)
         {
             Debug.Assert(TypeIndexToTypeBatchIndex[constraintTypeId] >= 0, "Type index must actually exist within this batch.");
 
             var typeBatchIndex = TypeIndexToTypeBatchIndex[constraintTypeId];
-            var handleRemover = new BodyHandleRemover(solver.bodies, ref handles);
+            var handleRemover = new ActiveBodyHandleRemover(solver.bodies, ref handles);
             ref var typeBatch = ref TypeBatches[typeBatchIndex];
             solver.TypeProcessors[constraintTypeId].EnumerateConnectedBodyIndices(ref typeBatch, indexInTypeBatch, ref handleRemover);
             Remove(ref typeBatch, typeBatchIndex, indexInTypeBatch, solver.TypeProcessors[constraintTypeId], ref solver.HandleToConstraint, solver.bufferPool);
@@ -270,7 +277,6 @@ namespace BepuPhysics
             {
                 TypeBatches[i].Dispose(pool);
             }
-            TypeBatches.Clear();
             pool.SpecializeFor<int>().Return(ref TypeIndexToTypeBatchIndex);
             TypeIndexToTypeBatchIndex = new Buffer<int>();
             TypeBatches.Dispose(pool.SpecializeFor<TypeBatch>());

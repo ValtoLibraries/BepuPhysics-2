@@ -15,6 +15,8 @@ namespace BepuPhysics
     /// </summary>
     public partial class Simulation : IDisposable
     {
+        public IslandActivator Activator { get; private set; }
+        public Deactivator Deactivator { get; private set; }
         public Bodies Bodies { get; private set; }
         public Statics Statics { get; private set; }
         public Shapes Shapes { get; private set; }
@@ -27,7 +29,8 @@ namespace BepuPhysics
         public CollidableOverlapFinder BroadPhaseOverlapFinder { get; private set; }
         public NarrowPhase NarrowPhase { get; private set; }
 
-
+        //Helpers shared across at least two stages.
+        internal ConstraintRemover constraintRemover;
 
         /// <summary>
         /// Gets the main memory pool used to fill persistent structures and main thread ephemeral resources across the engine.
@@ -43,20 +46,27 @@ namespace BepuPhysics
         protected Simulation(BufferPool bufferPool, SimulationAllocationSizes initialAllocationSizes)
         {
             BufferPool = bufferPool;
-            Statics = new Statics(bufferPool, initialAllocationSizes.Statics);
             Shapes = new Shapes(bufferPool, initialAllocationSizes.ShapesPerType);
-            Solver = new Solver(Bodies, BufferPool,
-                initialCapacity: initialAllocationSizes.Constraints,
-                minimumCapacityPerTypeBatch: initialAllocationSizes.ConstraintsPerTypeBatch);
             BroadPhase = new BroadPhase(bufferPool, initialAllocationSizes.Bodies, initialAllocationSizes.Bodies + initialAllocationSizes.Statics);
-            Bodies = new Bodies(bufferPool, Statics, Shapes, BroadPhase, Solver, initialAllocationSizes.Bodies);
+            Bodies = new Bodies(bufferPool, Shapes, BroadPhase,
+                initialAllocationSizes.Bodies,
+                initialAllocationSizes.Islands,
+                initialAllocationSizes.ConstraintCountPerBodyEstimate);
+            Statics = new Statics(bufferPool, Shapes, Bodies, BroadPhase, Activator, initialAllocationSizes.Statics);
 
-
+            Solver = new Solver(Bodies, BufferPool, 8,
+                initialCapacity: initialAllocationSizes.Constraints,
+                initialIslandCapacity: initialAllocationSizes.Islands,
+                minimumCapacityPerTypeBatch: initialAllocationSizes.ConstraintsPerTypeBatch);
+            constraintRemover = new ConstraintRemover(BufferPool, Bodies, Solver);
+            Deactivator = new Deactivator(Bodies, Solver, BroadPhase, constraintRemover, BufferPool);
+            Activator = new IslandActivator(Bodies, Statics, Solver, BroadPhase, Deactivator, bufferPool);
+            Bodies.Initialize(Solver, Activator);
             PoseIntegrator = new PoseIntegrator(Bodies, Shapes, BroadPhase);
-
             SolverBatchCompressor = new BatchCompressor(Solver, Bodies);
             BodyLayoutOptimizer = new BodyLayoutOptimizer(Bodies, BroadPhase, Solver, bufferPool);
             ConstraintLayoutOptimizer = new ConstraintLayoutOptimizer(Bodies, Solver);
+
         }
 
         /// <summary>
@@ -85,98 +95,18 @@ namespace BepuPhysics
 
             var simulation = new Simulation(bufferPool, initialAllocationSizes.Value);
             DefaultTypes.Register(simulation.Solver, out var defaultTaskRegistry);
-            var narrowPhase = new NarrowPhase<TNarrowPhaseCallbacks>(simulation, defaultTaskRegistry, narrowPhaseCallbacks);
+            var narrowPhase = new NarrowPhase<TNarrowPhaseCallbacks>(simulation, defaultTaskRegistry, narrowPhaseCallbacks, initialAllocationSizes.Value.Islands + 1);
             simulation.NarrowPhase = narrowPhase;
+            simulation.Deactivator.pairCache = narrowPhase.PairCache;
+            simulation.Activator.pairCache = narrowPhase.PairCache;
             simulation.BroadPhaseOverlapFinder = new CollidableOverlapFinder<TNarrowPhaseCallbacks>(narrowPhase, simulation.BroadPhase);
 
             return simulation;
         }
 
 
-        //TODO: There is an argument for pushing this 'add' and 'remove' stuff into the respective subsystems.
-        //The only problem is that they tend to cover multiple subsystems- a body add must deal with the broad phase, constraint graph, and the bodies set.
-        //Constraint adds have to deal with the constraint graph and solver.
-        //Static adds have to deal with the broad phase and static set.
-        //This isn't an unsolvable issue- you can just pass those dependencies in-
-        //it's just a question of what would be most reasonable as an API design. Users might default to expecting all body-related stuff to be done within the Bodies,
-        //and then they'll get confused when stuff doesn't work like it should when they try making a body kinematic/dynamic by just changing mass or something...
-        //It does clearly increase coupling, but I'm not sure it matters. Consider the idea of a 'collision detection only' simulation- 
-        //virtually everything goes away. There's no such thing as a 'body' in coldet-only land. You'd just have a tree, collidables within it, and then a stripped down
-        //version of the narrowphase that does nothing but report overlaps to a streaming batcher.
-        //A 'solver only' simulation is trickier, but I'm not sure it's worth focusing on that because it's effectively just 'don't give any bodies a collidable'.
-        //Or you could explicitly disable the broadphase/overlapfinder/narrowphases, leaving the rest unchanged.
-        //(And then you could say, oh, but what about a solver-only simulation *that doesn't support deactivation!* and frankly it's just getting a little absurd.)
-        //Forcing the main simulation API to jump through awkward hoops to maintain phantasmal decoupling just seems... questionable.
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void UpdateBounds(ref RigidPose pose, ref TypedIndex shapeIndex, out BoundingBox bodyBounds)
-        {
-            //Note: the min and max here are in absolute coordinates, which means this is a spot that has to be updated in the event that positions use a higher precision representation.
-            Shapes[shapeIndex.Type].ComputeBounds(shapeIndex.Index, ref pose, out bodyBounds.Min, out bodyBounds.Max);
-        }
-
-        //    STATICS 
-        public int Add(ref StaticDescription description)
-        {
-            var handle = Statics.Add(ref description);
-            var index = Statics.HandleToIndex[handle];
-            Debug.Assert(description.Collidable.Shape.Exists, "Static collidables cannot lack a shape. Their only purpose is colliding.");
-            //Note that we have to calculate an initial bounding box for the broad phase to be able to insert it efficiently.
-            //(In the event of batch adds, you'll want to use batched AABB calculations or just use cached values.)
-            //Note: the min and max here are in absolute coordinates, which means this is a spot that has to be updated in the event that positions use a higher precision representation.
-            UpdateBounds(ref description.Pose, ref description.Collidable.Shape, out var bounds);
-            //Note that new body collidables are always assumed to be active.
-            Statics.Collidables[index].BroadPhaseIndex =
-                BroadPhase.AddStatic(new CollidableReference(CollidableMobility.Static, handle), ref bounds);
-            return handle;
-        }
-        public void ApplyDescription(int handle, ref StaticDescription description)
-        {
-            Statics.ValidateExistingHandle(handle);
-            var bodyIndex = Statics.HandleToIndex[handle];
-            ref var collidable = ref Statics.Collidables[bodyIndex];
-            Debug.Assert(description.Collidable.Shape.Exists, "Static collidables cannot lack a shape. Their only purpose is colliding.");
-            Statics.SetDescriptionByIndex(bodyIndex, ref description);
-        }
-
-        public void RemoveStatic(int handle)
-        {
-            Statics.ValidateExistingHandle(handle);
-
-            var bodyIndex = Statics.HandleToIndex[handle];
-            ref var collidable = ref Statics.Collidables[bodyIndex];
-            Debug.Assert(collidable.Shape.Exists, "Static collidables cannot lack a shape. Their only purpose is colliding.");
-
-            var removedBroadPhaseIndex = collidable.BroadPhaseIndex;
-            if (BroadPhase.RemoveStaticAt(removedBroadPhaseIndex, out var movedLeaf))
-            {
-                //When a leaf is removed from the broad phase, another leaf will move to take its place in the leaf set.
-                //We must update the collidable->leaf index pointer to match the new position of the leaf in the broadphase.
-                //There are two possible cases for the moved leaf:
-                //1) it is an inactive body collidable,
-                //2) it is a static collidable.
-                //The collidable reference we retrieved tells us whether it's a body or a static.
-                //In the event that it's a body, we can infer the activity state from the body we just removed. Any body within the same 'leaf space' as the removed body
-                //shares its activity state. This involves some significant conceptual coupling with the broad phase's implementation, but that's a price we're willing to pay
-                //if it avoids extraneous data storage.
-                if (movedLeaf.Mobility == CollidableMobility.Static)
-                {
-                    //This is a static collidable, not a body.
-                    Statics.Collidables[Statics.HandleToIndex[movedLeaf.Handle]].BroadPhaseIndex = removedBroadPhaseIndex;
-                }
-                else
-                {
-                    //This is an inactive body.
-                    Bodies.Collidables[Bodies.HandleToLocation[movedLeaf.Handle]].BroadPhaseIndex = removedBroadPhaseIndex;
-                }
-            }
-
-            Statics.RemoveAt(bodyIndex, out var movedStaticOriginalIndex);
-        }
-
-
-
         //     CONSTRAINTS
+        //TODO: Push this into the Solver, like we did with Bodies and Statics.
 
         /// <summary>
         /// Allocates a constraint slot and sets up a constraint with the specified description.
@@ -191,8 +121,9 @@ namespace BepuPhysics
             Solver.Add(ref bodyHandles, bodyCount, ref description, out int constraintHandle);
             for (int i = 0; i < bodyCount; ++i)
             {
-                Bodies.ValidateExistingHandle(Unsafe.Add(ref bodyHandles, i));
-                ConstraintGraph.AddConstraint(Bodies.HandleToLocation[Unsafe.Add(ref bodyHandles, i)], constraintHandle, i);
+                var bodyHandle = Unsafe.Add(ref bodyHandles, i);
+                Bodies.ValidateExistingHandle(bodyHandle);
+                Bodies.AddConstraint(Bodies.HandleToLocation[bodyHandle].Index, constraintHandle, i);
             }
             return constraintHandle;
         }
@@ -218,10 +149,70 @@ namespace BepuPhysics
         public void RemoveConstraint(int constraintHandle)
         {
             ConstraintGraphRemovalEnumerator enumerator;
-            enumerator.graph = ConstraintGraph;
+            enumerator.bodies = Bodies;
             enumerator.constraintHandle = constraintHandle;
-            Solver.EnumerateConnectedBodyIndices(constraintHandle, ref enumerator);
+            Solver.EnumerateConnectedBodies(constraintHandle, ref enumerator);
             Solver.Remove(constraintHandle);
+        }
+
+        private int ValidateAndCountShapefulBodies(ref BodySet bodySet, Tree tree, ref Buffer<CollidableReference> leaves)
+        {
+            int shapefulBodyCount = 0;
+            for (int i = 0; i < bodySet.Count; ++i)
+            {
+                ref var collidable = ref bodySet.Collidables[i];
+                if (collidable.Shape.Exists)
+                {
+                    Debug.Assert(collidable.BroadPhaseIndex >= 0 && collidable.BroadPhaseIndex < tree.LeafCount);
+                    ref var leaf = ref leaves[collidable.BroadPhaseIndex];
+                    Debug.Assert(leaf.Handle == bodySet.IndexToHandle[i]);
+                    Debug.Assert(leaf.Mobility == CollidableMobility.Dynamic || leaf.Mobility == CollidableMobility.Kinematic);
+                    Debug.Assert((leaf.Mobility == CollidableMobility.Kinematic) == Bodies.ActiveSet.Activity[i].Kinematic);
+                    ++shapefulBodyCount;
+                }
+            }
+            return shapefulBodyCount;
+        }
+
+
+        [Conditional("DEBUG")]
+        internal void ValidateCollidables()
+        {
+            var activeShapefulBodyCount = ValidateAndCountShapefulBodies(ref Bodies.ActiveSet, BroadPhase.ActiveTree, ref BroadPhase.activeLeaves);
+            Debug.Assert(BroadPhase.ActiveTree.LeafCount == activeShapefulBodyCount);
+
+            int inactiveShapefulBodyCount = 0;
+
+            for (int setIndex = 1; setIndex < Bodies.Sets.Length; ++setIndex)
+            {
+                ref var set = ref Bodies.Sets[setIndex];
+                if (set.Allocated)
+                {
+                    inactiveShapefulBodyCount += ValidateAndCountShapefulBodies(ref set, BroadPhase.StaticTree, ref BroadPhase.staticLeaves);
+                }
+            }
+            Debug.Assert(inactiveShapefulBodyCount + Statics.Count == BroadPhase.StaticTree.LeafCount);
+            for (int i = 0; i < Statics.Count; ++i)
+            {
+                ref var collidable = ref Statics.Collidables[i];
+                Debug.Assert(collidable.Shape.Exists, "All static collidables must have shapes. That's their only purpose.");
+
+                Debug.Assert(collidable.BroadPhaseIndex >= 0 && collidable.BroadPhaseIndex < BroadPhase.StaticTree.LeafCount);
+                ref var leaf = ref BroadPhase.staticLeaves[collidable.BroadPhaseIndex];
+                Debug.Assert(leaf.Handle == Statics.IndexToHandle[i]);
+                Debug.Assert(leaf.Mobility == CollidableMobility.Static);
+            }
+
+            //Ensure there are no duplicates between the two broad phase trees.
+            for (int i = 0; i < BroadPhase.ActiveTree.LeafCount; ++i)
+            {
+                var activeLeaf = BroadPhase.activeLeaves[i];
+                for (int j = 0; j < BroadPhase.StaticTree.LeafCount; ++j)
+                {
+                    Debug.Assert(BroadPhase.staticLeaves[j].Packed != activeLeaf.Packed);
+                }
+            }
+
         }
 
         //TODO: I wonder if people will abuse the dt-as-parameter to the point where we should make it a field instead, like it effectively was in v1.
@@ -236,7 +227,18 @@ namespace BepuPhysics
         {
             ProfilerClear();
             ProfilerStart(this);
-            //Note that the first behavior-affecting stage is actually the pose integrator. This is a shift from v1, where collision detection went first.
+            //Note that there is a reason to put the deactivator *after* velocity integration. That sounds a little weird, but there's a good reason:
+            //When the narrow phase activates a bunch of objects in a pile, their accumulated impulses will represent all forces acting on them at the time of deactivation.
+            //That includes gravity. If we deactivate objects *before* gravity is applied in a given frame, then when those bodies are activated, the accumulated impulses
+            //will be less accurate because they assume that gravity has already been applied. This can cause a small bump.
+            //So instead, velocity integration (and deactivation candidacy management) comes before deactivation.
+
+            //Deactivation at the start, on the other hand, stops some forms of unintuitive behavior when using direct activations. Just a matter of preference.
+            ProfilerStart(Deactivator);
+            Deactivator.Update(threadDispatcher, Deterministic);
+            ProfilerEnd(Deactivator);
+
+            //Note that pose integrator comes before collision detection and solving. This is a shift from v1, where collision detection went first.
             //This is a tradeoff:
             //1) Any externally set velocities will be integrated without input from the solver. The v1-style external velocity control won't work as well-
             //the user would instead have to change velocities after the pose integrator runs. This isn't perfect either, since the pose integrator is also responsible
@@ -245,9 +247,7 @@ namespace BepuPhysics
             //3) Generated contact positions are in sync with the integrated poses. 
             //That's often helpful for gameplay purposes- you don't have to reinterpret contact data when creating graphical effects or positioning sound sources.
 
-            //TODO: This is something that is possibly worth exposing as one of the generic type parameters. Users could just choose the order arbitrarily.
-            //Or, since you're talking about something that happens once per frame instead of once per collision pair, just provide a simple callback.
-            //(Or maybe an enum even?)
+            //TODO: This is something that is possibly worth external customization. Users could just choose the order arbitrarily.
             //#1 is a difficult problem, though. There is no fully 'correct' place to change velocities. We might just have to bite the bullet and create a
             //inertia tensor/bounding box update separate from pose integration. If the cache gets evicted in between (virtually guaranteed unless no stages run),
             //this basically means an extra 100-200 microseconds per frame on a processor with ~20GBps bandwidth simulating 32768 bodies.
@@ -255,11 +255,12 @@ namespace BepuPhysics
             //Note that the reason why the pose integrator comes first instead of, say, the solver, is that the solver relies on world space inertias calculated by the pose integration.
             //If the pose integrator doesn't run first, we either need 
             //1) complicated on demand updates of world inertia when objects are added or local inertias are changed or 
-            //2) local->world inertia calculation before the solver.        
-
+            //2) local->world inertia calculation before the solver.  
             ProfilerStart(PoseIntegrator);
             PoseIntegrator.Update(dt, BufferPool, threadDispatcher);
             ProfilerEnd(PoseIntegrator);
+
+
 
             ProfilerStart(BroadPhase);
             BroadPhase.Update(threadDispatcher);
@@ -307,12 +308,13 @@ namespace BepuPhysics
         /// </summary>
         public void Clear()
         {
-            ConstraintGraph.Clear(Bodies);
             Solver.Clear();
             Bodies.Clear();
             Statics.Clear();
             Shapes.Clear();
             BroadPhase.Clear();
+            NarrowPhase.Clear();
+            Deactivator.Clear();
         }
 
         /// <summary>
@@ -333,11 +335,14 @@ namespace BepuPhysics
             Solver.EnsureSolverCapacities(allocationTarget.Bodies, allocationTarget.Constraints);
             Solver.MinimumCapacityPerTypeBatch = Math.Max(allocationTarget.ConstraintsPerTypeBatch, Solver.MinimumCapacityPerTypeBatch);
             Solver.EnsureTypeBatchCapacities();
+            NarrowPhase.PairCache.EnsureConstraintToPairMappingCapacity(Solver, allocationTarget.Constraints);
             //Note that the bodies set has to come before the body layout optimizer; the body layout optimizer's sizes are dependent upon the bodies set.
             Bodies.EnsureCapacity(allocationTarget.Bodies);
+            Bodies.MinimumConstraintCapacityPerBody = allocationTarget.ConstraintCountPerBodyEstimate;
+            Bodies.EnsureConstraintListCapacities();
+            Deactivator.EnsureSetsCapacity(allocationTarget.Islands + 1);
             BodyLayoutOptimizer.ResizeForBodiesCapacity(BufferPool);
             Statics.EnsureCapacity(allocationTarget.Statics);
-            ConstraintGraph.EnsureCapacity(Bodies, allocationTarget.Bodies, allocationTarget.ConstraintCountPerBodyEstimate);
             Shapes.EnsureBatchCapacities(allocationTarget.ShapesPerType);
             BroadPhase.EnsureCapacity(allocationTarget.Bodies, allocationTarget.Bodies + allocationTarget.Statics);
         }
@@ -361,11 +366,14 @@ namespace BepuPhysics
             Solver.ResizeSolverCapacities(allocationTarget.Bodies, allocationTarget.Constraints);
             Solver.MinimumCapacityPerTypeBatch = allocationTarget.ConstraintsPerTypeBatch;
             Solver.ResizeTypeBatchCapacities();
+            NarrowPhase.PairCache.ResizeConstraintToPairMappingCapacity(Solver, allocationTarget.Constraints);
             //Note that the bodies set has to come before the body layout optimizer; the body layout optimizer's sizes are dependent upon the bodies set.
             Bodies.Resize(allocationTarget.Bodies);
+            Bodies.MinimumConstraintCapacityPerBody = allocationTarget.ConstraintCountPerBodyEstimate;
+            Bodies.ResizeConstraintListCapacities();
+            Deactivator.ResizeSetsCapacity(allocationTarget.Islands + 1);
             BodyLayoutOptimizer.ResizeForBodiesCapacity(BufferPool);
             Statics.Resize(allocationTarget.Statics);
-            ConstraintGraph.Resize(Bodies, allocationTarget.Bodies, allocationTarget.ConstraintCountPerBodyEstimate);
             Shapes.ResizeBatches(allocationTarget.ShapesPerType);
             BroadPhase.Resize(allocationTarget.Bodies, allocationTarget.Bodies + allocationTarget.Statics);
         }
@@ -376,13 +384,13 @@ namespace BepuPhysics
         public void Dispose()
         {
             Clear();
+            Deactivator.Dispose();
             Solver.Dispose();
             BroadPhase.Dispose();
             NarrowPhase.Dispose();
             Bodies.Dispose();
             Statics.Dispose();
             BodyLayoutOptimizer.Dispose(BufferPool);
-            ConstraintGraph.Dispose();
             Shapes.Dispose();
         }
     }
