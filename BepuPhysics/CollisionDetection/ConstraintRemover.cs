@@ -282,7 +282,7 @@ namespace BepuPhysics.CollisionDetection
             }
 
             //Ensure that the solver's id pool is large enough to hold all constraint handles being removed.
-            //(Note that we do this even if we end up using this for deactivation, where we don't actually return the handles.
+            //(Note that we do this even if we end up using this for sleeping, where we don't actually return the handles.
             //There's no functional reason for that- it's just simpler to not have a conditional API, and it has no significant impact on performance. Might change later.)
             solver.HandlePool.EnsureCapacity(solver.HandlePool.AvailableIds.Count + removedConstraintCount, intPool);
 
@@ -378,7 +378,7 @@ namespace BepuPhysics.CollisionDetection
                 for (int removalTargetIndex = 0; removalTargetIndex < workerCache.RemovalTargets.Count; ++removalTargetIndex)
                 {
                     ref var target = ref workerCache.RemovalTargets[removalTargetIndex];
-                    bodies.RemoveConstraint(target.BodyIndex, target.ConstraintHandle);
+                    bodies.RemoveConstraintReference(target.BodyIndex, target.ConstraintHandle);
                 }
             }
 

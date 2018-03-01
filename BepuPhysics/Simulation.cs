@@ -15,8 +15,8 @@ namespace BepuPhysics
     /// </summary>
     public partial class Simulation : IDisposable
     {
-        public IslandActivator Activator { get; private set; }
-        public Deactivator Deactivator { get; private set; }
+        public IslandAwakener Awakener { get; private set; }
+        public IslandSleeper Sleeper { get; private set; }
         public Bodies Bodies { get; private set; }
         public Statics Statics { get; private set; }
         public Shapes Shapes { get; private set; }
@@ -52,16 +52,18 @@ namespace BepuPhysics
                 initialAllocationSizes.Bodies,
                 initialAllocationSizes.Islands,
                 initialAllocationSizes.ConstraintCountPerBodyEstimate);
-            Statics = new Statics(bufferPool, Shapes, Bodies, BroadPhase, Activator, initialAllocationSizes.Statics);
+            Statics = new Statics(bufferPool, Shapes, Bodies, BroadPhase, initialAllocationSizes.Statics);
 
             Solver = new Solver(Bodies, BufferPool, 8,
                 initialCapacity: initialAllocationSizes.Constraints,
                 initialIslandCapacity: initialAllocationSizes.Islands,
                 minimumCapacityPerTypeBatch: initialAllocationSizes.ConstraintsPerTypeBatch);
             constraintRemover = new ConstraintRemover(BufferPool, Bodies, Solver);
-            Deactivator = new Deactivator(Bodies, Solver, BroadPhase, constraintRemover, BufferPool);
-            Activator = new IslandActivator(Bodies, Statics, Solver, BroadPhase, Deactivator, bufferPool);
-            Bodies.Initialize(Solver, Activator);
+            Sleeper = new IslandSleeper(Bodies, Solver, BroadPhase, constraintRemover, BufferPool);
+            Awakener = new IslandAwakener(Bodies, Statics, Solver, BroadPhase, Sleeper, bufferPool);
+            Statics.awakener = Awakener;
+            Solver.awakener = Awakener;
+            Bodies.Initialize(Solver, Awakener);
             PoseIntegrator = new PoseIntegrator(Bodies, Shapes, BroadPhase);
             SolverBatchCompressor = new BatchCompressor(Solver, Bodies);
             BodyLayoutOptimizer = new BodyLayoutOptimizer(Bodies, BroadPhase, Solver, bufferPool);
@@ -94,66 +96,19 @@ namespace BepuPhysics
             }
 
             var simulation = new Simulation(bufferPool, initialAllocationSizes.Value);
-            DefaultTypes.Register(simulation.Solver, out var defaultTaskRegistry);
-            var narrowPhase = new NarrowPhase<TNarrowPhaseCallbacks>(simulation, defaultTaskRegistry, narrowPhaseCallbacks, initialAllocationSizes.Value.Islands + 1);
+            var narrowPhase = new NarrowPhase<TNarrowPhaseCallbacks>(simulation, DefaultTypes.CreateDefaultCollisionTaskRegistry(),
+                narrowPhaseCallbacks, initialAllocationSizes.Value.Islands + 1);
+            DefaultTypes.RegisterDefaults(simulation.Solver, narrowPhase);
             simulation.NarrowPhase = narrowPhase;
-            simulation.Deactivator.pairCache = narrowPhase.PairCache;
-            simulation.Activator.pairCache = narrowPhase.PairCache;
+            simulation.Sleeper.pairCache = narrowPhase.PairCache;
+            simulation.Awakener.pairCache = narrowPhase.PairCache;
+            simulation.Solver.pairCache = narrowPhase.PairCache;
             simulation.BroadPhaseOverlapFinder = new CollidableOverlapFinder<TNarrowPhaseCallbacks>(narrowPhase, simulation.BroadPhase);
 
             return simulation;
         }
 
 
-        //     CONSTRAINTS
-        //TODO: Push this into the Solver, like we did with Bodies and Statics.
-
-        /// <summary>
-        /// Allocates a constraint slot and sets up a constraint with the specified description.
-        /// </summary>
-        /// <typeparam name="TDescription">Type of the constraint description to add.</typeparam>
-        /// <param name="bodyHandles">First body handle in a list of body handles used by the constraint.</param>
-        /// <param name="bodyCount">Number of bodies used by the constraint.</param>
-        /// <returns>Allocated constraint handle.</returns>
-        public int Add<TDescription>(ref int bodyHandles, int bodyCount, ref TDescription description)
-            where TDescription : IConstraintDescription<TDescription>
-        {
-            Solver.Add(ref bodyHandles, bodyCount, ref description, out int constraintHandle);
-            for (int i = 0; i < bodyCount; ++i)
-            {
-                var bodyHandle = Unsafe.Add(ref bodyHandles, i);
-                Bodies.ValidateExistingHandle(bodyHandle);
-                Bodies.AddConstraint(Bodies.HandleToLocation[bodyHandle].Index, constraintHandle, i);
-            }
-            return constraintHandle;
-        }
-
-        /// <summary>
-        /// Allocates a two-body constraint slot and sets up a constraint with the specified description.
-        /// </summary>
-        /// <typeparam name="TDescription">Type of the constraint description to add.</typeparam>
-        /// <param name="bodyHandleA">First body of the pair.</param>
-        /// <param name="bodyHandleB">Second body of the pair.</param>
-        /// <returns>Allocated constraint handle.</returns>
-        public unsafe int Add<TDescription>(int bodyHandleA, int bodyHandleB, ref TDescription description)
-            where TDescription : IConstraintDescription<TDescription>
-        {
-            //Don't really want to take a dependency on the stack layout of parameters, so...
-            var bodyReferences = stackalloc int[2];
-            bodyReferences[0] = bodyHandleA;
-            bodyReferences[1] = bodyHandleB;
-            return Add(ref bodyReferences[0], 2, ref description);
-        }
-
-
-        public void RemoveConstraint(int constraintHandle)
-        {
-            ConstraintGraphRemovalEnumerator enumerator;
-            enumerator.bodies = Bodies;
-            enumerator.constraintHandle = constraintHandle;
-            Solver.EnumerateConnectedBodies(constraintHandle, ref enumerator);
-            Solver.Remove(constraintHandle);
-        }
 
         private int ValidateAndCountShapefulBodies(ref BodySet bodySet, Tree tree, ref Buffer<CollidableReference> leaves)
         {
@@ -227,16 +182,16 @@ namespace BepuPhysics
         {
             ProfilerClear();
             ProfilerStart(this);
-            //Note that there is a reason to put the deactivator *after* velocity integration. That sounds a little weird, but there's a good reason:
-            //When the narrow phase activates a bunch of objects in a pile, their accumulated impulses will represent all forces acting on them at the time of deactivation.
-            //That includes gravity. If we deactivate objects *before* gravity is applied in a given frame, then when those bodies are activated, the accumulated impulses
+            //Note that there is a reason to put the sleep *after* velocity integration. That sounds a little weird, but there's a good reason:
+            //When the narrow phase activates a bunch of objects in a pile, their accumulated impulses will represent all forces acting on them at the time of sleep.
+            //That includes gravity. If we sleep objects *before* gravity is applied in a given frame, then when those bodies are awakened, the accumulated impulses
             //will be less accurate because they assume that gravity has already been applied. This can cause a small bump.
-            //So instead, velocity integration (and deactivation candidacy management) comes before deactivation.
+            //So instead, velocity integration (and deactivation candidacy management) comes before sleep.
 
-            //Deactivation at the start, on the other hand, stops some forms of unintuitive behavior when using direct activations. Just a matter of preference.
-            ProfilerStart(Deactivator);
-            Deactivator.Update(threadDispatcher, Deterministic);
-            ProfilerEnd(Deactivator);
+            //Sleep at the start, on the other hand, stops some forms of unintuitive behavior when using direct awakenings. Just a matter of preference.
+            ProfilerStart(Sleeper);
+            Sleeper.Update(threadDispatcher, Deterministic);
+            ProfilerEnd(Sleeper);
 
             //Note that pose integrator comes before collision detection and solving. This is a shift from v1, where collision detection went first.
             //This is a tradeoff:
@@ -255,12 +210,10 @@ namespace BepuPhysics
             //Note that the reason why the pose integrator comes first instead of, say, the solver, is that the solver relies on world space inertias calculated by the pose integration.
             //If the pose integrator doesn't run first, we either need 
             //1) complicated on demand updates of world inertia when objects are added or local inertias are changed or 
-            //2) local->world inertia calculation before the solver.  
+            //2) local->world inertia calculation before the solver.
             ProfilerStart(PoseIntegrator);
             PoseIntegrator.Update(dt, BufferPool, threadDispatcher);
             ProfilerEnd(PoseIntegrator);
-
-
 
             ProfilerStart(BroadPhase);
             BroadPhase.Update(threadDispatcher);
@@ -269,7 +222,7 @@ namespace BepuPhysics
             ProfilerStart(BroadPhaseOverlapFinder);
             BroadPhaseOverlapFinder.DispatchOverlaps(threadDispatcher);
             ProfilerEnd(BroadPhaseOverlapFinder);
-
+            
             ProfilerStart(NarrowPhase);
             NarrowPhase.Flush(threadDispatcher, threadDispatcher != null && Deterministic);
             ProfilerEnd(NarrowPhase);
@@ -314,7 +267,7 @@ namespace BepuPhysics
             Shapes.Clear();
             BroadPhase.Clear();
             NarrowPhase.Clear();
-            Deactivator.Clear();
+            Sleeper.Clear();
         }
 
         /// <summary>
@@ -340,7 +293,7 @@ namespace BepuPhysics
             Bodies.EnsureCapacity(allocationTarget.Bodies);
             Bodies.MinimumConstraintCapacityPerBody = allocationTarget.ConstraintCountPerBodyEstimate;
             Bodies.EnsureConstraintListCapacities();
-            Deactivator.EnsureSetsCapacity(allocationTarget.Islands + 1);
+            Sleeper.EnsureSetsCapacity(allocationTarget.Islands + 1);
             BodyLayoutOptimizer.ResizeForBodiesCapacity(BufferPool);
             Statics.EnsureCapacity(allocationTarget.Statics);
             Shapes.EnsureBatchCapacities(allocationTarget.ShapesPerType);
@@ -371,7 +324,7 @@ namespace BepuPhysics
             Bodies.Resize(allocationTarget.Bodies);
             Bodies.MinimumConstraintCapacityPerBody = allocationTarget.ConstraintCountPerBodyEstimate;
             Bodies.ResizeConstraintListCapacities();
-            Deactivator.ResizeSetsCapacity(allocationTarget.Islands + 1);
+            Sleeper.ResizeSetsCapacity(allocationTarget.Islands + 1);
             BodyLayoutOptimizer.ResizeForBodiesCapacity(BufferPool);
             Statics.Resize(allocationTarget.Statics);
             Shapes.ResizeBatches(allocationTarget.ShapesPerType);
@@ -384,7 +337,7 @@ namespace BepuPhysics
         public void Dispose()
         {
             Clear();
-            Deactivator.Dispose();
+            Sleeper.Dispose();
             Solver.Dispose();
             BroadPhase.Dispose();
             NarrowPhase.Dispose();

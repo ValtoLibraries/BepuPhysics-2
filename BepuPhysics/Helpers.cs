@@ -1,9 +1,19 @@
 ﻿using System.Numerics;
+using System.Runtime.CompilerServices;
 
 namespace BepuPhysics
 {
     internal static class Helpers
     {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void Swap<T>(ref T a, ref T b)
+        {
+            var temp = a;
+            a = b;
+            b = temp;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void BuildOrthnormalBasis(ref Vector3Wide normal, out Vector3Wide t1, out Vector3Wide t2)
         {
             //This could probably be improved.
@@ -18,6 +28,18 @@ namespace BepuPhysics
             t2.X = Vector<float>.One + sign * normal.X * normal.X * scale;
             t2.Y = sign * t1.X;
             t2.Z = -sign * normal.X;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void FindPerpendicular(ref Vector3Wide normal, out Vector3Wide perpendicular)
+        {
+            var sign = Vector.ConditionalSelect(Vector.LessThan(normal.Z, Vector<float>.Zero), -Vector<float>.One, Vector<float>.One);
+            
+            var scale = -Vector<float>.One / (sign + normal.Z);
+            perpendicular.X = normal.X * normal.Y * scale;
+            perpendicular.Y = sign + normal.Y * normal.Y * scale;
+            perpendicular.Z = -normal.Y;
+            
         }
     }
 }

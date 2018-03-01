@@ -9,9 +9,9 @@ namespace BepuPhysics
     /// </summary>
     public struct Triangular2x2Wide
     {
-        public Vector<float> M11;
-        public Vector<float> M21;
-        public Vector<float> M22;
+        public Vector<float> XX;
+        public Vector<float> YX;
+        public Vector<float> YY;
 
         /// <summary>
         /// Computes m * scale * mT. 
@@ -23,42 +23,81 @@ namespace BepuPhysics
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void SandwichScale(ref Matrix2x3Wide m, ref Vector<float> scale, out Triangular2x2Wide result)
         {
-            result.M11 = scale * (m.X.X * m.X.X + m.X.Y * m.X.Y + m.X.Z * m.X.Z);
-            result.M21 = scale * (m.Y.X * m.X.X + m.Y.Y * m.X.Y + m.Y.Z * m.X.Z);
-            result.M22 = scale * (m.Y.X * m.Y.X + m.Y.Y * m.Y.Y + m.Y.Z * m.Y.Z);
+            result.XX = scale * (m.X.X * m.X.X + m.X.Y * m.X.Y + m.X.Z * m.X.Z);
+            result.YX = scale * (m.Y.X * m.X.X + m.Y.Y * m.X.Y + m.Y.Z * m.X.Z);
+            result.YY = scale * (m.Y.X * m.Y.X + m.Y.Y * m.Y.Y + m.Y.Z * m.Y.Z);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void Scale(ref Triangular2x2Wide t, ref Vector<float> scale, out Triangular2x2Wide result)
+        {
+            result.XX = t.XX * scale;
+            result.YX = t.YX * scale;
+            result.YY = t.YY * scale;
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Add(ref Triangular2x2Wide a, ref Triangular2x2Wide b, out Triangular2x2Wide result)
         {
-            result.M11 = a.M11 + b.M11;
-            result.M21 = a.M21 + b.M21;
-            result.M22 = a.M22 + b.M22;
+            result.XX = a.XX + b.XX;
+            result.YX = a.YX + b.YX;
+            result.YY = a.YY + b.YY;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Subtract(ref Triangular2x2Wide a, ref Triangular2x2Wide b, out Triangular2x2Wide result)
         {
-            result.M11 = a.M11 - b.M11;
-            result.M21 = a.M21 - b.M21;
-            result.M22 = a.M22 - b.M22;
+            result.XX = a.XX - b.XX;
+            result.YX = a.YX - b.YX;
+            result.YY = a.YY - b.YY;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void InvertWithoutOverlap(ref Triangular2x2Wide m, out Triangular2x2Wide inverse)
+        public static void InvertSymmetricWithoutOverlap(ref Triangular2x2Wide m, out Triangular2x2Wide inverse)
         {
-            var denom = Vector<float>.One / (m.M21 * m.M21 - m.M11 * m.M22);
-            inverse.M11 = -m.M22 * denom;
-            inverse.M21 = m.M21 * denom;
-            inverse.M22 = -m.M11 * denom;
+            var denom = Vector<float>.One / (m.YX * m.YX - m.XX * m.YY);
+            inverse.XX = -m.YY * denom;
+            inverse.YX = m.YX * denom;
+            inverse.YY = -m.XX * denom;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void TransformBySymmetricWithoutOverlap(ref Vector2Wide v, ref Triangular2x2Wide m, out Vector2Wide result)
         {
-            result.X = v.X * m.M11 + v.Y * m.M21;
-            result.Y = v.X * m.M21 + v.Y * m.M22;
+            result.X = v.X * m.XX + v.Y * m.YX;
+            result.Y = v.X * m.YX + v.Y * m.YY;
         }
+
+        /// <summary>
+        /// Computes result = transpose(transpose(a) * b), assuming b is symmetric.
+        /// </summary>
+        /// <param name="a">Matrix to be transposed and multiplied.</param>
+        /// <param name="b">Symmetric matrix to multiply.</param>
+        /// <param name="result">Result of transpose(transpose(a) * b).</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void MultiplyTransposedBySymmetric(ref Matrix2x3Wide a, ref Triangular2x2Wide b, out Matrix2x3Wide result)
+        {
+            result.X.X = a.X.X * b.XX + a.Y.X * b.YX;
+            result.X.Y = a.X.Y * b.XX + a.Y.Y * b.YX;
+            result.X.Z = a.X.Z * b.XX + a.Y.Z * b.YX;
+            result.Y.X = a.X.X * b.YX + a.Y.X * b.YY;
+            result.Y.Y = a.X.Y * b.YX + a.Y.Y * b.YY;
+            result.Y.Z = a.X.Z * b.YX + a.Y.Z * b.YY;
+        }
+
+        /// <summary>
+        /// Computes a * transpose(b), assuming a = b * M. This is conceptually the second half of Triangular3x3Wide.MatrixSandwich.
+        /// </summary>
+        /// <param name="a">First matrix to multiply. Must be of the form a = b * M.</param>
+        /// <param name="b">Matrix to be transaposed and multiplied with a..</param>
+        /// <param name="result">Symmetric result of a * transpose(b), assuming a = b * M.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void CompleteMatrixSandwich(ref Matrix2x3Wide a, ref Matrix2x3Wide b, out Triangular2x2Wide result)
+        {
+            result.XX = a.X.X * b.X.X + a.X.Y * b.X.Y + a.X.Z * b.X.Z;
+            result.YX = a.Y.X * b.X.X + a.Y.Y * b.X.Y + a.Y.Z * b.X.Z;
+            result.YY = a.Y.X * b.Y.X + a.Y.Y * b.Y.Y + a.Y.Z * b.Y.Z;
+        }
+
     }
 }

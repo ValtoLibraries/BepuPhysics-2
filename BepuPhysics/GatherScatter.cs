@@ -192,8 +192,8 @@ namespace BepuPhysics
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe void GatherVelocities(ref Buffer<BodyVelocity> velocities, ref TwoBodyReferences references, int count, out BodyVelocities velocitiesA, out BodyVelocities velocitiesB)
         {
-            ref var targetLinearAX = ref Unsafe.As<Vector<float>, float>(ref velocitiesA.LinearVelocity.X);
-            ref var targetLinearBX = ref Unsafe.As<Vector<float>, float>(ref velocitiesB.LinearVelocity.X);
+            ref var targetLinearAX = ref Unsafe.As<Vector<float>, float>(ref velocitiesA.Linear.X);
+            ref var targetLinearBX = ref Unsafe.As<Vector<float>, float>(ref velocitiesB.Linear.X);
 
             //Grab the base references for the body indices. Note that we make use of the references memory layout again.
             ref var baseIndexA = ref Unsafe.As<Vector<int>, int>(ref references.IndexA);
@@ -230,10 +230,10 @@ namespace BepuPhysics
         public static unsafe void ScatterVelocities(ref Buffer<BodyVelocity> velocities, ref TwoBodyReferences references, int count, ref BodyVelocities velocitiesA, ref BodyVelocities velocitiesB)
         {
             ref var baseTargetIndexA = ref Unsafe.As<Vector<int>, int>(ref references.IndexA);
-            ref var baseSourceLinearAX = ref Unsafe.As<Vector<float>, float>(ref velocitiesA.LinearVelocity.X);
+            ref var baseSourceLinearAX = ref Unsafe.As<Vector<float>, float>(ref velocitiesA.Linear.X);
 
             ref var baseTargetIndexB = ref Unsafe.As<Vector<int>, int>(ref references.IndexB);
-            ref var baseSourceLinearBX = ref Unsafe.As<Vector<float>, float>(ref velocitiesB.LinearVelocity.X);
+            ref var baseSourceLinearBX = ref Unsafe.As<Vector<float>, float>(ref velocitiesB.Linear.X);
 
             for (int i = 0; i < count; ++i)
             {
@@ -278,7 +278,7 @@ namespace BepuPhysics
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe void GatherVelocities(ref Buffer<BodyVelocity> velocities, ref Vector<int> references, int count, out BodyVelocities velocitiesA)
         {
-            ref var targetLinearAX = ref Unsafe.As<Vector<float>, float>(ref velocitiesA.LinearVelocity.X);
+            ref var targetLinearAX = ref Unsafe.As<Vector<float>, float>(ref velocitiesA.Linear.X);
 
             //Grab the base references for the body indices. Note that we make use of the references memory layout again.
             ref var baseIndexA = ref Unsafe.As<Vector<int>, int>(ref references);
@@ -303,7 +303,7 @@ namespace BepuPhysics
         public static unsafe void ScatterVelocities(ref Buffer<BodyVelocity> velocities, ref Vector<int> references, int count, ref BodyVelocities velocitiesA)
         {
             ref var baseTargetIndexA = ref Unsafe.As<Vector<int>, int>(ref references);
-            ref var baseSourceLinearAX = ref Unsafe.As<Vector<float>, float>(ref velocitiesA.LinearVelocity.X);            
+            ref var baseSourceLinearAX = ref Unsafe.As<Vector<float>, float>(ref velocitiesA.Linear.X);            
 
             for (int i = 0; i < count; ++i)
             {
@@ -377,7 +377,30 @@ namespace BepuPhysics
             }
         }
 
+        /// <summary>
+        /// Gets a reference to a shifted bundle container such that the first slot of each bundle covers the given inner index of the original bundle reference.
+        /// </summary>
+        /// <typeparam name="T">Type of the bundle container.</typeparam>
+        /// <param name="bundleContainer">Bundle container whose reference acts as the base for the shifted reference.</param>
+        /// <param name="innerIndex">Index within the bundle to access with the shifted reference.</param>
+        /// <returns>Shifted bundle container reference covering the inner index of the original bundle reference.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static ref T GetOffsetInstance<T>(ref T bundleContainer, int innerIndex) where T : struct
+        {
+            return ref Unsafe.As<float, T>(ref Unsafe.Add(ref Unsafe.As<T, float>(ref bundleContainer), innerIndex));
+        }
 
+        /// <summary>
+        /// Gets a reference to the first element in the vector reference.
+        /// </summary>
+        /// <typeparam name="T">Type of value held by the vector.</typeparam>
+        /// <param name="vector">Vector to pull the first slot value from.</param>
+        /// <returns>Reference to the value in the given vector's first slot.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static ref T GetFirst<T>(ref Vector<T> vector) where T : struct
+        {
+            return ref Unsafe.As<Vector<T>, T>(ref vector);
+        }
     }
 }
 

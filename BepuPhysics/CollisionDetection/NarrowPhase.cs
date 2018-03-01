@@ -104,6 +104,19 @@ namespace BepuPhysics.CollisionDetection
         //The majority of type pairs, however, only require a constraint handle.
         public PairCache PairCache;
 
+        internal ContactConstraintAccessor[] contactConstraintAccessors;
+        public void RegisterContactConstraintAccessor(ContactConstraintAccessor contactConstraintAccessor)
+        {
+            var id = contactConstraintAccessor.ConstraintTypeId;
+            if (contactConstraintAccessors == null || contactConstraintAccessors.Length <= id)
+                contactConstraintAccessors = new ContactConstraintAccessor[id + 1];
+            if(contactConstraintAccessors[id] != null)
+            {
+                throw new InvalidOperationException($"Cannot register accessor for type id {id}; it is already registered by {contactConstraintAccessors[id]}.");
+            }
+            contactConstraintAccessors[id] = contactConstraintAccessor;
+        }
+
         protected NarrowPhase()
         {
             flushWorkerLoop = FlushWorkerLoop;
@@ -169,8 +182,8 @@ namespace BepuPhysics.CollisionDetection
             this.deterministic = deterministic;
             var removalBatchJobCount = ConstraintRemover.CreateFlushJobs();
             //Note that we explicitly add the constraint remover jobs here. 
-            //The constraint remover can be used in two ways- deactivation style, and narrow phase style.
-            //In deactivation, we're not actually removing constraints from the simulation completely, so it requires fewer jobs.
+            //The constraint remover can be used in two ways- sleeper style, and narrow phase style.
+            //In sleeping, we're not actually removing constraints from the simulation completely, so it requires fewer jobs.
             //The constraint remover just lets you choose which jobs to call. The narrow phase needs all of them.
             flushJobs.EnsureCapacity(flushJobs.Count + removalBatchJobCount + 3, jobPool);
             flushJobs.AddUnsafely(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.RemoveConstraintsFromBodyLists });
@@ -232,6 +245,7 @@ namespace BepuPhysics.CollisionDetection
     {
         public TCallbacks Callbacks;
 
+
         public NarrowPhase(Simulation simulation, CollisionTaskRegistry collisionTaskRegistry, TCallbacks callbacks,
              int initialSetCapacity, int minimumMappingSize = 2048, int minimumPendingSize = 128, int minimumPerTypeCapacity = 128)
             : base()
@@ -262,7 +276,6 @@ namespace BepuPhysics.CollisionDetection
             //Here, we are disposing them late- that means we suffer a little more wasted memory use. 
             //If you actually wanted to address this, you could add in an OnPreflush or similar.
             DisposeConstraintGenerators(threadDispatcher == null ? 1 : threadDispatcher.ThreadCount);
-            Callbacks.Flush(threadDispatcher);
         }
 
         protected override void OnDispose()
@@ -297,13 +310,6 @@ namespace BepuPhysics.CollisionDetection
                 ref var bodyLocationA = ref Bodies.HandleToLocation[a.Handle];
                 ref var bodyLocationB = ref Bodies.HandleToLocation[b.Handle];
                 Debug.Assert(bodyLocationA.SetIndex == 0 || bodyLocationB.SetIndex == 0, "One of the two bodies must be active. Otherwise, something is busted!");
-                if (bodyLocationA.SetIndex != bodyLocationB.SetIndex)
-                {
-                    //TODO: TEMP; don't proceed with any activations or collision detection associated with inactives
-                    return;
-                    //One of the two bodies is inactive. Its island must be forced awake before the solver tries to do anything with the constraints we build.
-                    overlapWorker.PendingSetActivations.Add(bodyLocationA.SetIndex > 0 ? bodyLocationA.SetIndex : bodyLocationB.SetIndex, overlapWorker.Batcher.pool.SpecializeFor<int>());
-                }
                 ref var setA = ref Bodies.Sets[bodyLocationA.SetIndex];
                 ref var setB = ref Bodies.Sets[bodyLocationB.SetIndex];
                 AddBatchEntries(ref overlapWorker, ref pair,

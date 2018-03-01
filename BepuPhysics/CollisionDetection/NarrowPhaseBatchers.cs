@@ -16,7 +16,7 @@ namespace BepuPhysics.CollisionDetection
     public partial class NarrowPhase<TCallbacks> where TCallbacks : struct, INarrowPhaseCallbacks
     {
 
-        internal struct BatcherFilters : ICollisionSubtaskFilters
+        public struct BatcherFilters : ICollisionSubtaskFilters
         {
             NarrowPhase<TCallbacks> narrowPhase;
             int workerIndex;
@@ -40,13 +40,13 @@ namespace BepuPhysics.CollisionDetection
             }
         }
 
-        internal struct OverlapWorker
+        public struct OverlapWorker
         {
             public StreamingBatcher Batcher;
             public BatcherFilters Filters;
             public ConstraintGenerators ConstraintGenerators;
             public PendingConstraintAddCache PendingConstraints;
-            public QuickList<int, Buffer<int>> PendingSetActivations;
+            public QuickList<int, Buffer<int>> PendingSetAwakenings;
 
             public OverlapWorker(int workerIndex, BufferPool pool, NarrowPhase<TCallbacks> narrowPhase)
             {
@@ -54,7 +54,7 @@ namespace BepuPhysics.CollisionDetection
                 Filters = new BatcherFilters(workerIndex, narrowPhase);
                 ConstraintGenerators = new ConstraintGenerators(workerIndex, pool, narrowPhase);
                 PendingConstraints = new PendingConstraintAddCache(pool);
-                QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), 16, out PendingSetActivations);
+                QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), 16, out PendingSetAwakenings);
             }
 
         }

@@ -31,7 +31,6 @@ struct PSInput
 	float3 ToAABB : RayDirection;
 	SphereInstance Sphere;
 };
-#define SampleRadius 0.70710678118
 PSInput VSMain(uint vertexId : SV_VertexId)
 {
 	//The vertex id is used to position each vertex. 
@@ -76,62 +75,31 @@ cbuffer PixelConstants : register(b1)
 	float3 CameraUpPS;
 	float Far;
 	float3 CameraBackwardPS;
+	float Padding;
+	float2 PixelSizeAtUnitPlane;
 };
-
-
-float GetProjectedDepth(float linearDepth, float near, float far)
-{
-	//Note the reversal of near and far relative to a standard depth projection.
-	//We use 0 to mean furthest, and 1 to mean closest.
-	float dn = linearDepth * near;
-	return (far * near - dn) / (linearDepth * far - dn);
-}
 
 bool RayCastSphere(float3 rayDirection, float3 spherePosition, float radius,
 	out float t, out float3 hitLocation, out float3 hitNormal)
 {
-	float directionLength = length(rayDirection);
-	float3 normalizedDirection = rayDirection / directionLength;
-	float3 m = -spherePosition;
-	float b = dot(m, normalizedDirection);
-	float c = dot(m, m) - radius * radius;
+	//Normalize the direction. Sqrts aren't *that* bad, and it both simplifies things and helps avoid numerical problems.
+	float inverseDLength = 1.0 / length(rayDirection);
+	float3 d = rayDirection * inverseDLength;
 
-	//This isn't a very good GPU implementation, but only worry about that if it becomes an issue.
-	if (c > 0 && b > 0)
-	{
-		t = 0;
-		hitLocation = 0;
-		hitNormal = 0;
-		return false;
-	}
-	else
-	{
-		float discriminant = b * b - c;
-		if (discriminant < 0)
-		{
-			t = 0;
-			hitLocation = 0;
-			hitNormal = 0;
-			return false;
-		}
-		else
-		{
-			t = -b - sqrt(discriminant);
-			if (t < 0)
-			{
-				t = 0;
-				hitLocation = 0;
-				hitNormal = 0;
-				return false;
-			}
-			else
-			{
-				hitLocation = normalizedDirection * t;
-				hitNormal = normalize(hitLocation - spherePosition);
-				return true;
-			}
-		}
-	}
+	//Move the origin up to the earliest possible impact time. This isn't necessary for math reasons, but it does help avoid some numerical problems.
+	float3 o = -spherePosition;
+	float tOffset = max(0, -dot(o, d) - radius);
+	o += d * tOffset;
+	float b = dot(o, d);
+	float c = dot(o, o) - radius * radius;
+
+	float discriminant = b * b - c;
+	t = max(0, -b - sqrt(discriminant));
+	hitLocation = o + d * t;
+	hitNormal = hitLocation / radius;
+	hitLocation += spherePosition;
+	t = (t + tOffset) * inverseDLength;
+	return (b <= 0 || c <= 0) && discriminant > 0;
 }
 
 
@@ -142,15 +110,14 @@ PSOutput PSMain(PSInput input)
 	float3 hitLocation, hitNormal;
 	if (RayCastSphere(input.ToAABB, input.Sphere.Position, input.Sphere.Radius, t, hitLocation, hitNormal))
 	{
-		float3 baseColor = UnpackR11G11B10_UNorm(input.Sphere.PackedColor);
-		float z = -dot(CameraBackwardPS, hitLocation);
 		float4 orientation = UnpackOrientation(input.Sphere.PackedOrientation);
-
+		float3 dpdx, dpdy;
+		GetScreenspaceDerivatives(hitLocation, hitNormal, input.ToAABB, CameraRightPS, CameraUpPS, CameraBackwardPS, PixelSizeAtUnitPlane, dpdx, dpdy);
 		float3 color = ShadeSurface(
-			hitLocation, hitNormal, UnpackR11G11B10_UNorm(input.Sphere.PackedColor),
-			input.Sphere.Position, orientation, input.Sphere.Radius * 2, z);
-		output.Color = color;// baseColor * 0.9 + 0.1 * normalize(abs(TransformByConjugate(hitNormal, UnpackOrientation(input.Sphere.PackedOrientation))));
-		output.Depth = GetProjectedDepth(z, Near, Far);
+			hitLocation, hitNormal, UnpackR11G11B10_UNorm(input.Sphere.PackedColor), dpdx, dpdy,
+			input.Sphere.Position, orientation);
+		output.Color = color;
+		output.Depth = GetProjectedDepth(-dot(CameraBackwardPS, hitLocation), Near, Far);
 	}
 	else
 	{

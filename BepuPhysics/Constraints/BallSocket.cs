@@ -4,7 +4,7 @@ using System;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-
+using static BepuPhysics.GatherScatter;
 namespace BepuPhysics.Constraints
 {
 
@@ -28,29 +28,29 @@ namespace BepuPhysics.Constraints
         public void ApplyDescription(ref TypeBatch batch, int bundleIndex, int innerIndex)
         {
             Debug.Assert(ConstraintTypeId == batch.TypeId, "The type batch passed to the description must match the description's expected type.");
-            ref var lane = ref GatherScatter.Get(ref Buffer<BallSocketPrestepData>.Get(ref batch.PrestepData, bundleIndex).LocalOffsetA.X, innerIndex);
-            lane = LocalOffsetA.X;
-            Unsafe.Add(ref lane, Vector<float>.Count) = LocalOffsetA.Y;
-            Unsafe.Add(ref lane, 2 * Vector<float>.Count) = LocalOffsetA.Z;
-            Unsafe.Add(ref lane, 3 * Vector<float>.Count) = LocalOffsetB.X;
-            Unsafe.Add(ref lane, 4 * Vector<float>.Count) = LocalOffsetB.Y;
-            Unsafe.Add(ref lane, 5 * Vector<float>.Count) = LocalOffsetB.Z;
-            Unsafe.Add(ref lane, 6 * Vector<float>.Count) = SpringSettings.NaturalFrequency;
-            Unsafe.Add(ref lane, 7 * Vector<float>.Count) = SpringSettings.DampingRatio;
+            ref var target = ref GatherScatter.GetOffsetInstance(ref Buffer<BallSocketPrestepData>.Get(ref batch.PrestepData, bundleIndex), innerIndex);
+            GetFirst(ref target.LocalOffsetA.X) = LocalOffsetA.X;
+            GetFirst(ref target.LocalOffsetA.Y) = LocalOffsetA.Y;
+            GetFirst(ref target.LocalOffsetA.Z) = LocalOffsetA.Z;
+            GetFirst(ref target.LocalOffsetB.X) = LocalOffsetB.X;
+            GetFirst(ref target.LocalOffsetB.Y) = LocalOffsetB.Y;
+            GetFirst(ref target.LocalOffsetB.Z) = LocalOffsetB.Z;
+            GetFirst(ref target.SpringSettings.NaturalFrequency) = SpringSettings.NaturalFrequency;
+            GetFirst(ref target.SpringSettings.DampingRatio) = SpringSettings.DampingRatio;
         }
 
         public void BuildDescription(ref TypeBatch batch, int bundleIndex, int innerIndex, out BallSocket description)
         {
             Debug.Assert(ConstraintTypeId == batch.TypeId, "The type batch passed to the description must match the description's expected type.");
-            ref var lane = ref GatherScatter.Get(ref Buffer<BallSocketPrestepData>.Get(ref batch.PrestepData, bundleIndex).LocalOffsetA.X, innerIndex);
-            description.LocalOffsetA.X = lane;
-            description.LocalOffsetA.Y = Unsafe.Add(ref lane, Vector<float>.Count);
-            description.LocalOffsetA.Z = Unsafe.Add(ref lane, 2 * Vector<float>.Count);
-            description.LocalOffsetB.X = Unsafe.Add(ref lane, 3 * Vector<float>.Count);
-            description.LocalOffsetB.Y = Unsafe.Add(ref lane, 4 * Vector<float>.Count);
-            description.LocalOffsetB.Z = Unsafe.Add(ref lane, 5 * Vector<float>.Count);
-            description.SpringSettings.NaturalFrequency = Unsafe.Add(ref lane, 6 * Vector<float>.Count);
-            description.SpringSettings.DampingRatio = Unsafe.Add(ref lane, 7 * Vector<float>.Count);
+            ref var source = ref GatherScatter.GetOffsetInstance(ref Buffer<BallSocketPrestepData>.Get(ref batch.PrestepData, bundleIndex), innerIndex);
+            description.LocalOffsetA.X = GetFirst(ref source.LocalOffsetA.X);
+            description.LocalOffsetA.Y = GetFirst(ref source.LocalOffsetA.Y);
+            description.LocalOffsetA.Z = GetFirst(ref source.LocalOffsetA.Z);
+            description.LocalOffsetB.X = GetFirst(ref source.LocalOffsetB.X);
+            description.LocalOffsetB.Y = GetFirst(ref source.LocalOffsetB.Y);
+            description.LocalOffsetB.Z = GetFirst(ref source.LocalOffsetB.Z);
+            description.SpringSettings.NaturalFrequency = GetFirst(ref source.SpringSettings.NaturalFrequency);
+            description.SpringSettings.DampingRatio = GetFirst(ref source.SpringSettings.DampingRatio);
         }
     }
 
@@ -71,7 +71,7 @@ namespace BepuPhysics.Constraints
         public BodyInertias InertiaA;
         public BodyInertias InertiaB;
     }
-    
+
     public struct BallSocketFunctions : IConstraintFunctions<BallSocketPrestepData, BallSocketProjection, Vector3Wide>
     {
         //TODO: There may be an argument for some extra level of abstraction here. If we gave the prestep function the data it needed (i.e. pose and inertia)
@@ -124,9 +124,9 @@ namespace BepuPhysics.Constraints
 
             //Linear contributions are simply I * inverseMass * I, which is just boosting the diagonal.
             var linearContribution = projection.InertiaA.InverseMass + projection.InertiaB.InverseMass;
-            inverseEffectiveMass.M11 += linearContribution;
-            inverseEffectiveMass.M22 += linearContribution;
-            inverseEffectiveMass.M33 += linearContribution;
+            inverseEffectiveMass.XX += linearContribution;
+            inverseEffectiveMass.YY += linearContribution;
+            inverseEffectiveMass.ZZ += linearContribution;
             Triangular3x3Wide.SymmetricInvert(ref inverseEffectiveMass, out projection.EffectiveMass);
             Springiness.ComputeSpringiness(ref prestep.SpringSettings, dt, out var positionErrorToVelocity, out var effectiveMassCFMScale, out projection.SoftnessImpulseScale);
             Triangular3x3Wide.Scale(ref projection.EffectiveMass, ref effectiveMassCFMScale, out projection.EffectiveMass);
@@ -156,17 +156,17 @@ namespace BepuPhysics.Constraints
         {
             Vector3Wide.CrossWithoutOverlap(ref projection.OffsetA, ref csi, out var wsi);
             Triangular3x3Wide.TransformBySymmetricWithoutOverlap(ref wsi, ref projection.InertiaA.InverseInertiaTensor, out var change);
-            Vector3Wide.Add(ref velocityA.AngularVelocity, ref change, out velocityA.AngularVelocity);
+            Vector3Wide.Add(ref velocityA.Angular, ref change, out velocityA.Angular);
 
             Vector3Wide.Scale(ref csi, ref projection.InertiaA.InverseMass, out change);
-            Vector3Wide.Add(ref velocityA.LinearVelocity, ref change, out velocityA.LinearVelocity);
+            Vector3Wide.Add(ref velocityA.Linear, ref change, out velocityA.Linear);
 
             Vector3Wide.CrossWithoutOverlap(ref csi, ref projection.OffsetB, out wsi); //note flip-negation
             Triangular3x3Wide.TransformBySymmetricWithoutOverlap(ref wsi, ref projection.InertiaB.InverseInertiaTensor, out change);
-            Vector3Wide.Add(ref velocityB.AngularVelocity, ref change, out velocityB.AngularVelocity);
+            Vector3Wide.Add(ref velocityB.Angular, ref change, out velocityB.Angular);
 
             Vector3Wide.Scale(ref csi, ref projection.InertiaB.InverseMass, out change);
-            Vector3Wide.Subtract(ref velocityB.LinearVelocity, ref change, out velocityB.LinearVelocity); //note subtraction; the jacobian is -I
+            Vector3Wide.Subtract(ref velocityB.Linear, ref change, out velocityB.Linear); //note subtraction; the jacobian is -I
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -180,11 +180,11 @@ namespace BepuPhysics.Constraints
         {
             //csi = projection.BiasImpulse - accumulatedImpulse * projection.SoftnessImpulseScale - (csiaLinear + csiaAngular + csibLinear + csibAngular);
             //Note subtraction; jLinearB = -I.
-            Vector3Wide.Subtract(ref velocityA.LinearVelocity, ref velocityB.LinearVelocity, out var csv);
-            Vector3Wide.CrossWithoutOverlap(ref velocityA.AngularVelocity, ref projection.OffsetA, out var angularCSV);
+            Vector3Wide.Subtract(ref velocityA.Linear, ref velocityB.Linear, out var csv);
+            Vector3Wide.CrossWithoutOverlap(ref velocityA.Angular, ref projection.OffsetA, out var angularCSV);
             Vector3Wide.Add(ref csv, ref angularCSV, out csv);
             //Note reversed cross order; matches the jacobian -CrossMatrix(offsetB).
-            Vector3Wide.CrossWithoutOverlap(ref projection.OffsetB, ref velocityB.AngularVelocity, out angularCSV);
+            Vector3Wide.CrossWithoutOverlap(ref projection.OffsetB, ref velocityB.Angular, out angularCSV);
             Vector3Wide.Add(ref csv, ref angularCSV, out csv);
             Vector3Wide.Subtract(ref projection.BiasVelocity, ref csv, out csv);
 

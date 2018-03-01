@@ -102,6 +102,7 @@ namespace BepuUtilities
         /// <param name="a">First quaternion to multiply.</param>
         /// <param name="b">Second quaternion to multiply.</param>
         /// <returns>Product of the multiplication.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion Concatenate(Quaternion a, Quaternion b)
         {
             ConcatenateWithoutOverlap(ref a, ref b, out var result);
@@ -113,6 +114,7 @@ namespace BepuUtilities
         /// </summary>
         public static Quaternion Identity
         {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
             get
             {
                 return new Quaternion(0, 0, 0, 1);
@@ -150,7 +152,7 @@ namespace BepuUtilities
             }
             else
             {
-                if(r.X.X < -r.Y.Y)
+                if (r.X.X < -r.Y.Y)
                 {
                     t = 1 - r.X.X - r.Y.Y + r.Z.Z;
                     q.X = r.Z.X + r.X.Z;
@@ -175,6 +177,7 @@ namespace BepuUtilities
         /// </summary>
         /// <param name="r">Rotation matrix used to create a new quaternion.</param>
         /// <returns>Quaternion representing the same rotation as the matrix.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion CreateFromRotationMatrix(Matrix3x3 r)
         {
             Quaternion toReturn;
@@ -238,6 +241,7 @@ namespace BepuUtilities
         /// Computes the squared length of the quaternion.
         /// </summary>
         /// <returns>Squared length of the quaternion.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float LengthSquared()
         {
             return X * X + Y * Y + Z * Z + W * W;
@@ -247,6 +251,7 @@ namespace BepuUtilities
         /// Computes the length of the quaternion.
         /// </summary>
         /// <returns>Length of the quaternion.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public float Length()
         {
             return (float)Math.Sqrt(X * X + Y * Y + Z * Z + W * W);
@@ -260,6 +265,7 @@ namespace BepuUtilities
         /// <param name="end">Ending point of the interpolation.</param>
         /// <param name="interpolationAmount">Amount of the end point to use.</param>
         /// <param name="result">Interpolated intermediate quaternion.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Slerp(ref Quaternion start, ref Quaternion end, float interpolationAmount, out Quaternion result)
         {
             double cosHalfTheta = start.W * end.W + start.X * end.X + start.Y * end.Y + start.Z * end.Z;
@@ -307,10 +313,10 @@ namespace BepuUtilities
         /// <param name="end">Ending point of the interpolation.</param>
         /// <param name="interpolationAmount">Amount of the end point to use.</param>
         /// <returns>Interpolated intermediate quaternion.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion Slerp(Quaternion start, Quaternion end, float interpolationAmount)
         {
-            Quaternion toReturn;
-            Slerp(ref start, ref end, interpolationAmount, out toReturn);
+            Slerp(ref start, ref end, interpolationAmount, out Quaternion toReturn);
             return toReturn;
         }
 
@@ -320,6 +326,7 @@ namespace BepuUtilities
         /// </summary>
         /// <param name="quaternion">Quaternion to conjugate.</param>
         /// <param name="result">Conjugated quaternion.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Conjugate(ref Quaternion quaternion, out Quaternion result)
         {
             result.X = -quaternion.X;
@@ -333,10 +340,10 @@ namespace BepuUtilities
         /// </summary>
         /// <param name="quaternion">Quaternion to conjugate.</param>
         /// <returns>Conjugated quaternion.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion Conjugate(Quaternion quaternion)
         {
-            Quaternion toReturn;
-            Conjugate(ref quaternion, out toReturn);
+            Conjugate(ref quaternion, out Quaternion toReturn);
             return toReturn;
         }
 
@@ -347,6 +354,7 @@ namespace BepuUtilities
         /// </summary>
         /// <param name="quaternion">Quaternion to invert.</param>
         /// <param name="result">Result of the inversion.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Inverse(ref Quaternion quaternion, out Quaternion result)
         {
             float inverseSquaredNorm = quaternion.X * quaternion.X + quaternion.Y * quaternion.Y + quaternion.Z * quaternion.Z + quaternion.W * quaternion.W;
@@ -361,6 +369,7 @@ namespace BepuUtilities
         /// </summary>
         /// <param name="quaternion">Quaternion to invert.</param>
         /// <returns>Result of the inversion.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion Inverse(Quaternion quaternion)
         {
             Quaternion result;
@@ -375,6 +384,7 @@ namespace BepuUtilities
         /// <param name="a">First quaternion to test for equivalence.</param>
         /// <param name="b">Second quaternion to test for equivalence.</param>
         /// <returns>Whether or not the quaternions' components were equal.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool operator ==(Quaternion a, Quaternion b)
         {
             return a.X == b.X && a.Y == b.Y && a.Z == b.Z && a.W == b.W;
@@ -386,6 +396,7 @@ namespace BepuUtilities
         /// <param name="a">First quaternion to test for equivalence.</param>
         /// <param name="b">Second quaternion to test for equivalence.</param>
         /// <returns>Whether the quaternions' components were not equal.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool operator !=(Quaternion a, Quaternion b)
         {
             return a.X != b.X || a.Y != b.Y || a.Z != b.Z || a.W != b.W;
@@ -395,7 +406,7 @@ namespace BepuUtilities
         //If you need a high performance equality or hash, you'll need to implement something better than this.
         public override bool Equals(object obj)
         {
-            if(obj is Quaternion q)
+            if (obj is Quaternion q)
             {
                 return this == q;
             }
@@ -426,6 +437,7 @@ namespace BepuUtilities
         /// </summary>
         /// <param name="q">Quaternion to negate.</param>
         /// <returns>Negated result.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion Negate(Quaternion q)
         {
             Negate(ref q, out var result);
@@ -437,6 +449,7 @@ namespace BepuUtilities
         /// </summary>
         /// <param name="q">Quaternion to negate.</param>
         /// <returns>Negated result.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion operator -(Quaternion q)
         {
             Negate(ref q, out var result);
@@ -484,6 +497,7 @@ namespace BepuUtilities
         /// <param name="v">Vector to transform.</param>
         /// <param name="rotation">Rotation to apply to the vector.</param>
         /// <returns>Transformed vector.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Vector3 Transform(Vector3 v, Quaternion rotation)
         {
             Vector3 toReturn;
@@ -492,13 +506,12 @@ namespace BepuUtilities
         }
 
         /// <summary>
-        /// Transforms a vector using a quaternion. Specialized for x,0,0 vectors.
+        /// Transforms the unit X direction using a quaternion.
         /// </summary>
-        /// <param name="x">X component of the vector to transform.</param>
         /// <param name="rotation">Rotation to apply to the vector.</param>
         /// <param name="result">Transformed vector.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void TransformX(float x, ref Quaternion rotation, out Vector3 result)
+        public static void TransformUnitX(ref Quaternion rotation, out Vector3 result)
         {
             //This operation is an optimized-down version of v' = q * v * q^-1.
             //The expanded form would be to treat v as an 'axis only' quaternion
@@ -512,24 +525,19 @@ namespace BepuUtilities
             float zz2 = rotation.Z * z2;
             float wy2 = rotation.W * y2;
             float wz2 = rotation.W * z2;
-            //Defer the component setting since they're used in computation.
-            float transformedX = x * (1f - yy2 - zz2);
-            float transformedY = x * (xy2 + wz2);
-            float transformedZ = x * (xz2 - wy2);
-            result.X = transformedX;
-            result.Y = transformedY;
-            result.Z = transformedZ;
+            result.X = 1f - yy2 - zz2;
+            result.Y = xy2 + wz2;
+            result.Z = xz2 - wy2;
 
         }
 
         /// <summary>
-        /// Transforms a vector using a quaternion. Specialized for 0,y,0 vectors.
+        /// Transforms the unit Y vector using a quaternion.
         /// </summary>
-        /// <param name="y">Y component of the vector to transform.</param>
         /// <param name="rotation">Rotation to apply to the vector.</param>
         /// <param name="result">Transformed vector.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void TransformY(float y, ref Quaternion rotation, out Vector3 result)
+        public static void TransformUnitY(ref Quaternion rotation, out Vector3 result)
         {
             //This operation is an optimized-down version of v' = q * v * q^-1.
             //The expanded form would be to treat v as an 'axis only' quaternion
@@ -544,24 +552,18 @@ namespace BepuUtilities
             float zz2 = rotation.Z * z2;
             float wx2 = rotation.W * x2;
             float wz2 = rotation.W * z2;
-            //Defer the component setting since they're used in computation.
-            float transformedX = y * (xy2 - wz2);
-            float transformedY = y * (1f - xx2 - zz2);
-            float transformedZ = y * (yz2 + wx2);
-            result.X = transformedX;
-            result.Y = transformedY;
-            result.Z = transformedZ;
-
+            result.X = xy2 - wz2;
+            result.Y = 1f - xx2 - zz2;
+            result.Z = yz2 + wx2;
         }
 
         /// <summary>
-        /// Transforms a vector using a quaternion. Specialized for 0,0,z vectors.
+        /// Transforms the unit Z vector using a quaternion.
         /// </summary>
-        /// <param name="z">Z component of the vector to transform.</param>
         /// <param name="rotation">Rotation to apply to the vector.</param>
         /// <param name="result">Transformed vector.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void TransformZ(float z, ref Quaternion rotation, out Vector3 result)
+        public static void TransformUnitZ(ref Quaternion rotation, out Vector3 result)
         {
             //This operation is an optimized-down version of v' = q * v * q^-1.
             //The expanded form would be to treat v as an 'axis only' quaternion
@@ -576,22 +578,18 @@ namespace BepuUtilities
             float yz2 = rotation.Y * z2;
             float wx2 = rotation.W * x2;
             float wy2 = rotation.W * y2;
-            //Defer the component setting since they're used in computation.
-            float transformedX = z * (xz2 + wy2);
-            float transformedY = z * (yz2 - wx2);
-            float transformedZ = z * (1f - xx2 - yy2);
-            result.X = transformedX;
-            result.Y = transformedY;
-            result.Z = transformedZ;
-
+            result.X = xz2 + wy2;
+            result.Y = yz2 - wx2;
+            result.Z = 1f - xx2 - yy2;
         }
-        
+
         /// <summary>
         /// Creates a quaternion from an axis and angle.
         /// </summary>
         /// <param name="axis">Axis of rotation.</param>
         /// <param name="angle">Angle to rotate around the axis.</param>
         /// <returns>Quaternion representing the axis and angle rotation.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion CreateFromAxisAngle(Vector3 axis, float angle)
         {
             double halfAngle = angle * 0.5;

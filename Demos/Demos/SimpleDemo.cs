@@ -5,6 +5,9 @@ using BepuPhysics;
 using BepuPhysics.Collidables;
 using System;
 using System.Numerics;
+using System.Diagnostics;
+using BepuUtilities.Memory;
+using BepuUtilities.Collections;
 
 namespace Demos
 {
@@ -28,17 +31,20 @@ namespace Demos
             });
 
             var shape = new Sphere(0.5f);
+            BodyInertia sphereInertia;
+            sphereInertia.InverseMass = 1;
+            shape.ComputeLocalInverseInertia(sphereInertia.InverseMass, out sphereInertia.InverseInertiaTensor);
             var shapeIndex = Simulation.Shapes.Add(ref shape);
-            const int width = 2;
-            const int height = 32;
-            const int length = 2;
-            var latticeSpacing = 3.1f;
+            const int width = 16;
+            const int height = 16;
+            const int length = 16;
+            var latticeSpacing = 1.1f;
             var latticeOffset = -0.5f * width * latticeSpacing;
             SimulationSetup.BuildLattice(
-                new RegularGridBuilder(new Vector3(latticeSpacing, 1.5f, latticeSpacing), new Vector3(latticeOffset, 10, latticeOffset), 1f / (shape.Radius * shape.Radius * 2 / 3), shapeIndex),
+                new RegularGridBuilder(new Vector3(latticeSpacing, 1.1f, latticeSpacing), new Vector3(latticeOffset, 10, latticeOffset), sphereInertia, shapeIndex),
                 new ConstraintlessLatticeBuilder(),
                 width, height, length, Simulation, out var bodyHandles, out var constraintHandles);
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            Simulation.PoseIntegrator.Gravity = new Vector3(0, -1, 0);
             Simulation.Deterministic = false;
 
             var staticShape = new Sphere(4);
@@ -81,31 +87,9 @@ namespace Demos
         int frameIndex;
         public override void Update(Input input, float dt)
         {
-            //Console.WriteLine($"Preframe {frameIndex++}, mapping count: {Simulation.NarrowPhase.PairCache.Mapping.Count}");
-
             if (input.WasPushed(OpenTK.Input.Key.P))
-            {
-                for (int handle = 0; handle < Simulation.Bodies.HandleToLocation.Length; ++handle)
-                {
-                    ref var bodyLocation = ref Simulation.Bodies.HandleToLocation[handle];
-                    if(bodyLocation.SetIndex > 0)
-                    {
-                        Simulation.Activator.ActivateBody(handle);
-                        //break;
-                    }
-                }
-            }
-
-            //for (int i = 0; i < Simulation.Bodies.BodyCount; ++i)
-            //{
-            //    Simulation.Bodies.ValidateExistingHandle(Simulation.Bodies.IndexToHandle[i]);
-            //}
-            //if (input.WasPushed(OpenTK.Input.Key.P))
-            //{
-            //    Console.WriteLine("stoppls");
-            //}
+                Console.WriteLine("asdf");
             base.Update(input, dt);
-
         }
 
     }

@@ -29,7 +29,6 @@ namespace BepuPhysics
     /// </summary>
     public class Bodies
     {
-
         /// <summary>
         /// Remaps a body handle to the actual array index of the body.
         /// The backing array index may change in response to cache optimization.
@@ -54,12 +53,12 @@ namespace BepuPhysics
         /// It is only updated once during the frame. It should be treated as ephemeral information.
         /// </summary>
         public Buffer<BodyInertia> Inertias;
-        protected internal BufferPool pool;
+        internal BufferPool pool;
 
-        protected internal IslandActivator activator;
-        protected internal Shapes shapes;
-        protected internal BroadPhase broadPhase;
-        protected internal Solver solver;
+        internal IslandAwakener awakener;
+        internal Shapes shapes;
+        internal BroadPhase broadPhase;
+        internal Solver solver;
 
         /// <summary>
         /// Gets or sets the minimum constraint capacity for each body. Future resizes or allocations will obey this minimum, but changing this does not immediately resize existing lists.
@@ -96,11 +95,11 @@ namespace BepuPhysics
         /// Initializes the bodies set. Used to complete bidirectional dependencies.
         /// </summary>
         /// <param name="solver">Solver responsible for the constraints connected to the collection's bodies.</param>
-        /// <param name="activator">Island activator to use when bodies undergo transitions requiring that they exist in the active set.</param>
-        public void Initialize(Solver solver, IslandActivator activator)
+        /// <param name="awakener">Island awakener to use when bodies undergo transitions requiring that they exist in the active set.</param>
+        public void Initialize(Solver solver, IslandAwakener awakener)
         {
             this.solver = solver;
-            this.activator = activator;
+            this.awakener = awakener;
         }
 
         void AddCollidableToBroadPhase(int bodyHandle, ref RigidPose pose, ref BodyInertia localInertia, ref Collidable collidable)
@@ -177,7 +176,7 @@ namespace BepuPhysics
 
         internal int RemoveFromActiveSet(int activeBodyIndex)
         {
-            //Note that this is separated from the main removal because of deactivation. Deactivation doesn't want to truly remove from the *simulation*, just the active set.
+            //Note that this is separated from the main removal because of sleeping. Sleeping doesn't want to truly remove from the *simulation*, just the active set.
             //The constraints, and references to the constraints, are left untouched.
             ref var set = ref ActiveSet;
             Debug.Assert(activeBodyIndex >= 0 && activeBodyIndex < set.Count);
@@ -186,7 +185,7 @@ namespace BepuPhysics
             if (collidable.Shape.Exists)
             {
                 //The collidable exists, so it should be removed from the broadphase.
-                //This is true even when this function is used in the context of a deactivation. The collidable will be readded to the inactive tree.
+                //This is true even when this function is used in the context of a sleep. The collidable will be readded to the static tree.
                 RemoveCollidableFromBroadPhase(activeBodyIndex, ref collidable);
             }
 
@@ -231,7 +230,7 @@ namespace BepuPhysics
         public void Remove(int handle)
         {
             ValidateExistingHandle(handle);
-            activator.ActivateBody(handle);
+            awakener.AwakenBody(handle);
             RemoveAt(HandleToLocation[handle].Index);
         }
 
@@ -251,9 +250,9 @@ namespace BepuPhysics
         /// </summary>
         /// <param name="bodyIndex">Index of the active body.</param>
         /// <param name="constraintHandle">Handle of the constraint to remove.</param>
-        internal void RemoveConstraint(int bodyIndex, int constraintHandle)
+        internal void RemoveConstraintReference(int bodyIndex, int constraintHandle)
         {
-            ActiveSet.RemoveConstraint(bodyIndex, constraintHandle, MinimumConstraintCapacityPerBody, pool);
+            ActiveSet.RemoveConstraintReference(bodyIndex, constraintHandle, MinimumConstraintCapacityPerBody, pool);
         }
 
         /// <summary>
@@ -275,7 +274,7 @@ namespace BepuPhysics
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void UpdateBroadPhaseKinematicState(int handle, ref BodyLocation location, ref BodySet set)
         {
-            Debug.Assert(set.Activity[location.Index].Kinematic == IsKinematic(ref set.LocalInertias[location.Index]), 
+            Debug.Assert(set.Activity[location.Index].Kinematic == IsKinematic(ref set.LocalInertias[location.Index]),
                 "Activity's kinematic state should be updated prior to the broad phase update call. This function simply shares its determination.");
             ref var collidable = ref set.Collidables[location.Index];
             var kinematic = set.Activity[location.Index].Kinematic;
@@ -308,7 +307,7 @@ namespace BepuPhysics
             if (location.SetIndex > 0)
             {
                 //The body is inactive. Wake it up.
-                activator.ActivateBody(handle);
+                awakener.AwakenBody(handle);
             }
             //Note that the HandleToLocation slot reference is still valid; it may have been updated, but handle slots don't move.
             ref var set = ref Sets[location.SetIndex];
@@ -346,7 +345,7 @@ namespace BepuPhysics
             if (location.SetIndex > 0)
             {
                 //The body is inactive. Wake it up.
-                activator.ActivateBody(handle);
+                awakener.AwakenBody(handle);
             }
             //Note that the HandleToLocation slot reference is still valid; it may have been updated, but handle slots don't move.
             Debug.Assert(location.SetIndex == 0, "We should be working with an active shape.");
@@ -369,7 +368,7 @@ namespace BepuPhysics
             if (location.SetIndex > 0)
             {
                 //The body is inactive. Wake it up.
-                activator.ActivateBody(handle);
+                awakener.AwakenBody(handle);
             }
             //Note that the HandleToLocation slot reference is still valid; it may have been updated, but handle slots don't move.
             ref var set = ref Sets[location.SetIndex];
@@ -408,7 +407,7 @@ namespace BepuPhysics
             Debug.Assert(location.Index >= 0 && location.Index < set.Count, "Body index must fall within the existing body set.");
             Debug.Assert(set.IndexToHandle[location.Index] == handle, "Handle->index must match index->handle map.");
         }
-                
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void GatherInertiaForBody(ref BodyInertia source, ref float targetInertiaBase, int targetLaneIndex)
         {
@@ -459,7 +458,7 @@ namespace BepuPhysics
         //In order to support other absolute positions, we'll need alternate implementations of this and other functions.
         //But for the most part, we don't want to pay the overhead of an abstract invocation within the inner loop of the solver. 
         //Given the current limits of C# and the compiler, the best option seems to be a interface implementing struct that provides this functionality.
-        //The users would be type specialized by the compiler, avoiding virtual invocation. 
+        //The users would be type specialized by the compiler, avoiding virtual invocation. Or just conditional compilation.
         [MethodImpl(MethodImplOptions.AggressiveInlining)] //Note that this doesn't do anything at the moment- the stackalloc hack blocks inlining.
         internal void GatherInertiaAndPose(ref TwoBodyReferences references, int count,
             out Vector3Wide localPositionB, out QuaternionWide orientationA, out QuaternionWide orientationB,
@@ -477,8 +476,8 @@ namespace BepuPhysics
                 //TODO: remove this once the fix is in. It blocks inlining.
                 var hiPleaseDontRemoveThisWithoutTestingOrEverythingMightExplode = stackalloc byte[1];
             }
-            ref var targetInertiaBaseA = ref Unsafe.As<Vector<float>, float>(ref inertiaA.InverseInertiaTensor.M11);
-            ref var targetInertiaBaseB = ref Unsafe.As<Vector<float>, float>(ref inertiaB.InverseInertiaTensor.M11);
+            ref var targetInertiaBaseA = ref Unsafe.As<Vector<float>, float>(ref inertiaA.InverseInertiaTensor.XX);
+            ref var targetInertiaBaseB = ref Unsafe.As<Vector<float>, float>(ref inertiaB.InverseInertiaTensor.XX);
             Vector3Wide positionA, positionB;
             ref var targetPositionBaseA = ref Unsafe.As<Vector<float>, float>(ref positionA.X);
             ref var targetPositionBaseB = ref Unsafe.As<Vector<float>, float>(ref positionB.X);
@@ -518,8 +517,8 @@ namespace BepuPhysics
         internal void GatherInertia(ref TwoBodyReferences references, int count,
             out BodyInertias inertiaA, out BodyInertias inertiaB)
         {
-            ref var targetInertiaBaseA = ref Unsafe.As<Vector<float>, float>(ref inertiaA.InverseInertiaTensor.M11);
-            ref var targetInertiaBaseB = ref Unsafe.As<Vector<float>, float>(ref inertiaB.InverseInertiaTensor.M11);
+            ref var targetInertiaBaseA = ref Unsafe.As<Vector<float>, float>(ref inertiaA.InverseInertiaTensor.XX);
+            ref var targetInertiaBaseB = ref Unsafe.As<Vector<float>, float>(ref inertiaB.InverseInertiaTensor.XX);
 
             //Grab the base references for the body indices. Note that we make use of the references memory layout again.
             ref var baseIndexA = ref Unsafe.As<Vector<int>, int>(ref references.IndexA);
@@ -537,7 +536,7 @@ namespace BepuPhysics
         internal void GatherInertia(ref Vector<int> references, int count,
             out BodyInertias inertiaA)
         {
-            ref var targetInertiaBaseA = ref Unsafe.As<Vector<float>, float>(ref inertiaA.InverseInertiaTensor.M11);
+            ref var targetInertiaBaseA = ref Unsafe.As<Vector<float>, float>(ref inertiaA.InverseInertiaTensor.XX);
 
             //Grab the base references for the body indices. Note that we make use of the references memory layout again.
             ref var baseIndexA = ref Unsafe.As<Vector<int>, int>(ref references);
@@ -555,8 +554,8 @@ namespace BepuPhysics
             Debug.Assert(count <= Vector<float>.Count);
             ref var targetPositionBase = ref Unsafe.As<Vector<float>, float>(ref poses.Position.X);
             ref var targetOrientationBase = ref Unsafe.As<Vector<float>, float>(ref poses.Orientation.X);
-            ref var targetLinearBase = ref Unsafe.As<Vector<float>, float>(ref velocities.LinearVelocity.X);
-            ref var targetAngularBase = ref Unsafe.As<Vector<float>, float>(ref velocities.AngularVelocity.X);
+            ref var targetLinearBase = ref Unsafe.As<Vector<float>, float>(ref velocities.Linear.X);
+            ref var targetAngularBase = ref Unsafe.As<Vector<float>, float>(ref velocities.Angular.X);
             ref var targetShapeBase = ref Unsafe.As<Vector<int>, int>(ref shapeIndices);
             ref var targetExpansionBase = ref Unsafe.As<Vector<float>, float>(ref maximumExpansion);
             ref var activeSet = ref ActiveSet;
@@ -735,14 +734,26 @@ namespace BepuPhysics
         //Note that these resize and ensure capacity functions affect only the active set.
         //Inactive islands are created with minimal allocations. Since you cannot add to or remove from inactive islands, it is pointless to try to modify their allocation sizes.
         /// <summary>
-        /// Reallocates the inertias buffer to the smallest size that can hold all active bodies.
+        /// Reallocates the inertias buffer for the target capacity. Will not shrink below the size of the current active set.
         /// </summary>
-        internal void ResizeIneritas()
+        internal void ResizeInertias(int capacity)
         {
-            var targetInertiaCapacity = BufferPool<BodyInertia>.GetLowestContainingElementCount(ActiveSet.Count);
-            if (Inertias.Length != targetInertiaCapacity)
+            var targetCapacity = BufferPool<BodyInertia>.GetLowestContainingElementCount(Math.Max(capacity, ActiveSet.Count));
+            if (Inertias.Length != targetCapacity)
             {
-                pool.SpecializeFor<BodyInertia>().Resize(ref Inertias, targetInertiaCapacity, 0);
+                pool.SpecializeFor<BodyInertia>().Resize(ref Inertias, targetCapacity, Math.Min(Inertias.Length, ActiveSet.Count));
+            }
+        }
+        /// <summary>
+        /// Guarantees that the inertias capacity is sufficient for the given capacity.
+        /// </summary>
+        internal void EnsureInertiasCapacity(int capacity)
+        {
+            if (capacity < ActiveSet.Count)
+                capacity = ActiveSet.Count;
+            if (Inertias.Length < capacity)
+            {
+                pool.SpecializeFor<BodyInertia>().Resize(ref Inertias, capacity, Math.Min(Inertias.Length, ActiveSet.Count));
             }
         }
 
@@ -757,6 +768,7 @@ namespace BepuPhysics
             {
                 ActiveSet.InternalResize(targetBodyCapacity, pool);
             }
+            ResizeInertias(capacity);
             var targetHandleCapacity = BufferPool<int>.GetLowestContainingElementCount(Math.Max(capacity, HandlePool.HighestPossiblyClaimedId + 1));
             if (HandleToLocation.Length != targetHandleCapacity)
             {
@@ -790,6 +802,7 @@ namespace BepuPhysics
             {
                 ActiveSet.InternalResize(capacity, pool);
             }
+            EnsureInertiasCapacity(capacity);
             if (HandleToLocation.Length < capacity)
             {
                 ResizeHandles(capacity);

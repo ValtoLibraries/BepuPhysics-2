@@ -12,7 +12,7 @@ using System.Threading;
 
 namespace BepuPhysics
 {
-    public class Deactivator
+    public class IslandSleeper
     {
         IdPool<Buffer<int>> setIdPool;
         Bodies bodies;
@@ -25,21 +25,21 @@ namespace BepuPhysics
         public int InitialIslandConstraintCapacity { get; set; } = 1024;
 
         /// <summary>
-        /// Gets or sets the multiplier applied to the active body count used to calculate the number of deactivation traversals in a given timestep.
+        /// Gets or sets the multiplier applied to the active body count used to calculate the number of sleep traversals in a given timestep.
         /// </summary>
         public float TestedFractionPerFrame { get; set; } = 0.01f;
         /// <summary>
-        /// Gets or sets the fraction of the active set to target as the number of bodies deactivated in a given frame.
-        /// This is only a goal; the actual number of deactivated bodies may be more or less.
+        /// Gets or sets the fraction of the active set to target as the number of bodies slept in a given frame.
+        /// This is only a goal; the actual number of slept bodies may be more or less.
         /// </summary>
-        public float TargetDeactivatedFraction { get; set; } = 0.005f;
+        public float TargetSleptFraction { get; set; } = 0.005f;
         /// <summary>
-        /// Gets or sets the fraction of the active set to target as the number of bodies traversed for deactivation in a given frame.
+        /// Gets or sets the fraction of the active set to target as the number of bodies traversed for sleeping in a given frame.
         /// This is only a goal; the actual number of traversed bodies may be more or less.
         /// </summary>
         public float TargetTraversedFraction { get; set; } = 0.02f;
 
-        public Deactivator(Bodies bodies, Solver solver, BroadPhase broadPhase, ConstraintRemover constraintRemover, BufferPool pool)
+        public IslandSleeper(Bodies bodies, Solver solver, BroadPhase broadPhase, ConstraintRemover constraintRemover, BufferPool pool)
         {
             this.bodies = bodies;
             this.solver = solver;
@@ -76,7 +76,7 @@ namespace BepuPhysics
 
 
 
-        struct ForcedDeactivationPredicate : IPredicate<int>
+        struct ForcedSleepPredicate : IPredicate<int>
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public bool Matches(ref int bodyIndex)
@@ -84,10 +84,19 @@ namespace BepuPhysics
                 return true;
             }
         }
-        struct DeactivationPredicate : IPredicate<int>
+        struct SleepPredicate : IPredicate<int>
         {
             public Bodies Bodies;
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool Matches(ref int bodyIndex)
+            {
+                return Bodies.ActiveSet.Activity[bodyIndex].SleepCandidate;
+            }
+        }
+        struct TraversalTest<TPredicate> : IPredicate<int> where TPredicate : IPredicate<int>
+        {
             public IndexSet PreviouslyTraversedBodies;
+            public TPredicate Predicate;
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public bool Matches(ref int bodyIndex)
@@ -98,7 +107,7 @@ namespace BepuPhysics
                 //Note that it is safe to add to the previously traversed body set. The current traversal's consideredBodies set is tested first.
                 //If it gets a hit, the predicate isn't executed, but the traversal doesn't stop.
                 PreviouslyTraversedBodies.AddUnsafely(bodyIndex);
-                return Bodies.ActiveSet.Activity[bodyIndex].DeactivationCandidate;
+                return Predicate.Matches(ref bodyIndex);
             }
         }
 
@@ -217,8 +226,8 @@ namespace BepuPhysics
         }
 
         int targetTraversedBodyCountPerThread;
-        int targetDeactivatedBodyCountPerThread;
-        QuickList<int, Buffer<int>> traversalTargetBodyIndices;
+        int targetSleptBodyCountPerThread;
+        QuickList<int, Buffer<int>> traversalStartBodyIndices;
         IThreadDispatcher threadDispatcher;
         int jobIndex;
 
@@ -227,7 +236,7 @@ namespace BepuPhysics
         {
             //Note that all these resources are allocated on per-worker pools. Be careful when disposing them.
             public IndexSet TraversedBodies;
-            public QuickList<Island, Buffer<Island>> Islands;
+            public QuickList<IslandScaffold, Buffer<IslandScaffold>> Islands;
 
             internal void Dispose(BufferPool pool)
             {
@@ -235,7 +244,7 @@ namespace BepuPhysics
                 {
                     Islands[islandIndex].Dispose(pool);
                 }
-                Islands.Dispose(pool.SpecializeFor<Island>());
+                Islands.Dispose(pool.SpecializeFor<IslandScaffold>());
                 TraversedBodies.Dispose(pool);
             }
         }
@@ -261,40 +270,40 @@ namespace BepuPhysics
 
         QuickList<GatheringJob, Buffer<GatheringJob>> gatheringJobs;
 
-        void FindIslands(int workerIndex, BufferPool threadPool)
+        void FindIslands<TPredicate>(int workerIndex, BufferPool threadPool, ref TPredicate predicate) where TPredicate : IPredicate<int>
         {
             Debug.Assert(workerTraversalResults.Allocated && workerTraversalResults.Length > workerIndex);
             ref var results = ref workerTraversalResults[workerIndex];
-            var islandPool = threadPool.SpecializeFor<Island>();
-            QuickList<Island, Buffer<Island>>.Create(islandPool, 64, out results.Islands);
+            var islandPool = threadPool.SpecializeFor<IslandScaffold>();
+            QuickList<IslandScaffold, Buffer<IslandScaffold>>.Create(islandPool, 64, out results.Islands);
             var intPool = threadPool.SpecializeFor<int>();
 
             QuickList<int, Buffer<int>>.Create(intPool, Math.Min(InitialIslandBodyCapacity, bodies.ActiveSet.Count), out var bodyIndices);
             QuickList<int, Buffer<int>>.Create(intPool, Math.Min(InitialIslandConstraintCapacity, solver.HandlePool.HighestPossiblyClaimedId + 1), out var constraintHandles);
 
-            DeactivationPredicate predicate;
-            predicate.Bodies = bodies;
-            predicate.PreviouslyTraversedBodies = new IndexSet(threadPool, bodies.ActiveSet.Count);
+            TraversalTest<TPredicate> traversalTest;
+            traversalTest.Predicate = predicate;
+            traversalTest.PreviouslyTraversedBodies = new IndexSet(threadPool, bodies.ActiveSet.Count);
             var traversedBodies = 0;
-            var deactivatedBodies = 0;
+            var sleptBodies = 0;
 
-            while (traversedBodies < targetTraversedBodyCountPerThread && deactivatedBodies < targetDeactivatedBodyCountPerThread)
+            while (traversedBodies < targetTraversedBodyCountPerThread && sleptBodies < targetSleptBodyCountPerThread)
             {
-                //This thread still has some deactivation budget, so try another traversal.
+                //This thread still has some sleeping budget, so try another traversal.
                 var targetIndex = Interlocked.Increment(ref jobIndex);
-                if (targetIndex >= traversalTargetBodyIndices.Count)
+                if (targetIndex >= traversalStartBodyIndices.Count)
                     break;
-                var bodyIndex = traversalTargetBodyIndices[targetIndex];
-                if (CollectIsland(threadPool, bodyIndex, ref predicate, ref bodyIndices, ref constraintHandles))
+                var bodyIndex = traversalStartBodyIndices[targetIndex];
+                if (CollectIsland(threadPool, bodyIndex, ref traversalTest, ref bodyIndices, ref constraintHandles))
                 {
-                    //Found an island to deactivate!
-                    deactivatedBodies += bodyIndices.Count;
+                    //Found an island to sleep!
+                    sleptBodies += bodyIndices.Count;
 
-                    //Note that the deactivation predicate refuses to visit any body that was visited in any previous traversal on this thread. 
+                    //Note that the sleep predicate refuses to visit any body that was visited in any previous traversal on this thread. 
                     //From that we know that any newly discovered island is unique *on this thread*. It's very possible that a different thread has found the same
                     //island, but we let that happen in favor of avoiding tons of sync overhead.
                     //The gathering phase will check each worker's island against all previous workers. If it's a duplicate, it will get thrown out.
-                    var island = new Island(ref bodyIndices, ref constraintHandles, solver, threadPool);
+                    var island = new IslandScaffold(ref bodyIndices, ref constraintHandles, solver, threadPool);
                     results.Islands.Add(ref island, islandPool);
                 }
                 traversedBodies += bodyIndices.Count;
@@ -303,13 +312,27 @@ namespace BepuPhysics
             }
             bodyIndices.Dispose(intPool);
             constraintHandles.Dispose(intPool);
-            results.TraversedBodies = predicate.PreviouslyTraversedBodies;
+            results.TraversedBodies = traversalTest.PreviouslyTraversedBodies;
         }
-
+        void FindIslands(int workerIndex, BufferPool threadPool)
+        {
+            //This if is handled externally to push the code specialization early.
+            if (forceSleep)
+            {
+                var predicate = new ForcedSleepPredicate();
+                FindIslands(workerIndex, threadPool, ref predicate);
+            }
+            else
+            {
+                var predicate = new SleepPredicate { Bodies = bodies };
+                FindIslands(workerIndex, threadPool, ref predicate);
+            }
+        }
         Action<int> findIslandsDelegate;
+        bool forceSleep;
         void FindIslands(int workerIndex)
         {
-            //The only reason we separate this out is to make it easier for the main pool to be passed in if there is only a single thread.
+            //The only reason we separate this out is to make it easier for the main pool to be passed in if there is only a single thread. 
             FindIslands(workerIndex, threadDispatcher.GetThreadMemoryPool(workerIndex));
         }
 
@@ -428,7 +451,7 @@ namespace BepuPhysics
                             for (int bodyIndex = 0; bodyIndex < set.Count; ++bodyIndex)
                             {
                                 ref var location = ref bodies.HandleToLocation[set.IndexToHandle[bodyIndex]];
-                                Debug.Assert(location.SetIndex == 0, "At this point, the deactivation hasn't gone through so the set should still be 0.");
+                                Debug.Assert(location.SetIndex == 0, "At this point, the sleep hasn't gone through so the set should still be 0.");
                                 bodies.RemoveFromActiveSet(location.Index);
                                 //And now we can actually update the handle->body mapping.
                                 location.SetIndex = setIndex;
@@ -469,10 +492,10 @@ namespace BepuPhysics
                                 largestBodyCount = setCount;
                         }
                         //We just arbitrarily guess a few pairs per body. It might be wrong, but that's fine- it'll resize if needed. Just don't want to constantly resize.
-                        var setBuilder = new InactiveSetBuilder(pool, largestBodyCount * 4, largestBodyCount);
+                        var setBuilder = new SleepingSetBuilder(pool, largestBodyCount * 4, largestBodyCount);
                         for (int setReferenceIndex = 0; setReferenceIndex < newInactiveSets.Count; ++setReferenceIndex)
                         {
-                            pairCache.DeactivateTypeBatchPairs(ref setBuilder, newInactiveSets[setReferenceIndex].Index, solver);
+                            pairCache.SleepTypeBatchPairs(ref setBuilder, newInactiveSets[setReferenceIndex].Index, solver);
                         }
                         setBuilder.Dispose(pool);
                     }
@@ -504,7 +527,7 @@ namespace BepuPhysics
         int scheduleOffset;
 
         [Conditional("DEBUG")]
-        unsafe void PrintIsland(ref Island island)
+        unsafe void PrintIsland(ref IslandScaffold island)
         {
             Console.Write($"{island.BodyIndices.Count} body handles: ");
             for (int i = 0; i < island.BodyIndices.Count; ++i)
@@ -559,119 +582,39 @@ namespace BepuPhysics
             }
             Console.WriteLine();
         }
-        public void Update(IThreadDispatcher threadDispatcher, bool deterministic)
+
+
+        void Sleep(ref QuickList<int, Buffer<int>> traversalStartBodyIndices, IThreadDispatcher threadDispatcher,
+            int targetSleptBodyCountPerThread, int targetTraversedBodyCountPerThread, bool forceSleep)
         {
-            if (bodies.ActiveSet.Count == 0)
-                return;
-
-            //var totalHeuristic = 0f;
-            //var deactivationCandidateCount = 0;
-            //var totalEnergyOfNonCandidates = 0f;
-            //var totalEnergyOfCandidates = 0f;
-            //var highestEnergy = 0f;
-            //var highestEnergyIndex = -1;
-            //for (int i = 0; i < bodies.ActiveSet.Count; ++i)
-            //{
-            //    ref var velocities = ref bodies.ActiveSet.Velocities[i];
-            //    var heuristic = velocities.Linear.LengthSquared() + velocities.Angular.LengthSquared();
-            //    totalHeuristic += heuristic;
-            //    ref var activity = ref bodies.ActiveSet.Activity[i];
-            //    if (activity.DeactivationCandidate)
-            //    {
-            //        ++deactivationCandidateCount;
-            //        totalEnergyOfCandidates += heuristic;
-            //    }
-            //    else
-            //    {
-            //        totalEnergyOfNonCandidates += heuristic;
-            //    }
-            //    if (heuristic > highestEnergy)
-            //    {
-            //        highestEnergyIndex = i;
-            //        highestEnergy = heuristic;
-            //    }
-            //}
-            //Console.WriteLine(
-            //    $"TE: {totalHeuristic}, " +
-            //    $"CC: {deactivationCandidateCount}, " +
-            //    $"ACE: {totalEnergyOfCandidates / deactivationCandidateCount}, " +
-            //    $"ANCE: {totalEnergyOfNonCandidates / (bodies.ActiveSet.Count - deactivationCandidateCount)}" +
-            //    $"HE: {highestEnergy}, HEI: {highestEnergyIndex}");
-
-            //There are four threaded phases to deactivation:
-            //1) Traversing the constraint graph to identify 'simulation islands' that satisfy the deactivation conditions.
+            //There are four threaded phases to sleep:
+            //1) Traversing the constraint graph to identify 'simulation islands' that satisfy the sleep conditions.
             //2) Gathering the data backing the bodies and constraints of a simulation island and placing it into an inactive storage representation (a BodySet and ConstraintSet).
             //3) Removing bodies, some solver bookkeeping related to removed constraints, and broad phase work.
-            //4) Removing the deactivated constraints from their type batches.
+            //4) Removing the slept constraints from their type batches.
             //Separating it into these phases allows for a fairly direct parallelization.
             //Traversal proceeds in parallel, biting the bullet on the fact that different traversal starting points on separate threads may identify the same island sometimes.
             //Once all islands have been detected, the second phase is able to eliminate duplicates and gather the remaining unique islands in parallel.
             //Finally, while removal involves many sequential operations, there are some fully parallel parts and some of the locally sequential parts can be run in parallel with each other.
 
             //The goal here isn't necessarily to speed up the best case- using four dispatches basically guarantees 20us to 50us of overhead- 
-            //but rather to try to keep the worst case from dropping frames and to improve deactivation responsiveness.
+            //but rather to try to keep the worst case from dropping frames and to improve sleep responsiveness.
 
-            //1) TRAVERSAL
-            int candidateCount = (int)Math.Max(1, bodies.ActiveSet.Count * TestedFractionPerFrame);
-
-            QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), candidateCount, out traversalTargetBodyIndices);
-
-            //Uniformly distribute targets across the active set. Each frame, the targets are pushed up by one slot.
-            int spacing = bodies.ActiveSet.Count / candidateCount;
-
-            //The schedule offset will gradually walk off into the sunset, and there's also a possibility that changes to the size of the active set (by, say, deactivation)
-            //will put the offset so far out that a single subtraction by the active set count would be insufficient. So instead we just wrap it to zero.
-            if (scheduleOffset > bodies.ActiveSet.Count)
-            {
-                scheduleOffset = 0;
-            }
-
-            var index = scheduleOffset;
-            for (int i = 0; i < candidateCount; ++i)
-            {
-                if (index >= bodies.ActiveSet.Count)
-                {
-                    index -= bodies.ActiveSet.Count;
-                }
-                traversalTargetBodyIndices.AllocateUnsafely() = index;
-                index += spacing;
-            }
-            ++scheduleOffset;
+            if (bodies.ActiveSet.Count == 0 || traversalStartBodyIndices.Count == 0)
+                return;
 
 
-            if (deterministic)
-            {
-                //The order in which deactivations occurs affects the result of the simulation. To ensure determinism, we need to pin the deactivation order to something
-                //which is deterministic. We will use the handle associated with each active body as the order provider.
-                pool.SpecializeFor<int>().Take(bodies.ActiveSet.Count, out var sortedIndices);
-                for (int i = 0; i < bodies.ActiveSet.Count; ++i)
-                {
-                    sortedIndices[i] = i;
-                }
-                //Handles are guaranteed to be unique; no need for three way partitioning.
-                HandleComparer comparer;
-                comparer.Handles = bodies.ActiveSet.IndexToHandle;
-                //TODO: This sort might end up being fairly expensive. On a very large simulation, it might even amount to 5% of the simulation time.
-                //It would be nice to come up with a better solution here. Some options include other sources of determinism, hiding the sort, and possibly enumerating directly over handles.
-                QuickSort.Sort(ref sortedIndices[0], 0, bodies.ActiveSet.Count - 1, ref comparer);
-
-                //Now that we have a sorted set of indices, we have eliminated nondeterminism related to memory layout. The initial target body indices can be remapped onto the sorted list.
-                for (int i = 0; i < traversalTargetBodyIndices.Count; ++i)
-                {
-                    traversalTargetBodyIndices[i] = sortedIndices[traversalTargetBodyIndices[i]];
-                    Debug.Assert(traversalTargetBodyIndices[i] >= 0 && traversalTargetBodyIndices[i] < bodies.ActiveSet.Count);
-                }
-                pool.SpecializeFor<int>().Return(ref sortedIndices);
-            }
+            //1) TRAVERSAL      
+            this.traversalStartBodyIndices = traversalStartBodyIndices;
+            this.targetSleptBodyCountPerThread = targetSleptBodyCountPerThread;
+            this.targetTraversedBodyCountPerThread = targetSleptBodyCountPerThread;
 
             int threadCount = threadDispatcher == null ? 1 : threadDispatcher.ThreadCount;
-            targetDeactivatedBodyCountPerThread = (int)Math.Max(1, bodies.ActiveSet.Count * TargetDeactivatedFraction / threadCount);
-            targetTraversedBodyCountPerThread = (int)Math.Max(1, bodies.ActiveSet.Count * TargetTraversedFraction / threadCount);
-
             pool.SpecializeFor<WorkerTraversalResults>().Take(threadCount, out workerTraversalResults);
             //Note that all resources within a worker's results set are allocate on the worker's pool since the thread may need to resize things.
             this.threadDispatcher = threadDispatcher;
             jobIndex = -1;
+            this.forceSleep = forceSleep;
             if (threadCount > 1)
             {
                 threadDispatcher.DispatchWorkers(findIslandsDelegate);
@@ -682,9 +625,8 @@ namespace BepuPhysics
             }
             this.threadDispatcher = null;
 
-            traversalTargetBodyIndices.Dispose(pool.SpecializeFor<int>());
 
-            //In the event that no islands are available for deactivation, early out to avoid the later dispatches.
+            //In the event that no islands are available for sleeping, early out to avoid the later dispatches.
             int totalIslandCount = 0;
             for (int i = 0; i < threadCount; ++i)
             {
@@ -714,7 +656,7 @@ namespace BepuPhysics
             }
 
             //2) GATHERING
-            //Traversal is now done. We should have a set of results for each worker in the workerTraversalResults. It's time to gather all the data for the deactivating bodies and constraints.
+            //Traversal is now done. We should have a set of results for each worker in the workerTraversalResults. It's time to gather all the data for the slept bodies and constraints.
             //Note that we only preallocate a fixed size. It will often be an overestimate, but that's fine. Resizes are more concerning.
             //(We could precompute the exact number of jobs, but it's not really necessary.) 
             var objectsPerGatherJob = 64;
@@ -727,7 +669,7 @@ namespace BepuPhysics
             var inactiveSetReferencePool = pool.SpecializeFor<InactiveSetReference>();
             var broadPhaseDataPool = pool.SpecializeFor<CachedBroadPhaseData>();
             QuickList<InactiveSetReference, Buffer<InactiveSetReference>>.Create(inactiveSetReferencePool, 32, out newInactiveSets);
-            var deactivatedBodyCount = 0;
+            var sleptBodyCount = 0;
             for (int workerIndex = 0; workerIndex < threadCount; ++workerIndex)
             {
                 ref var workerIslands = ref workerTraversalResults[workerIndex].Islands;
@@ -738,7 +680,7 @@ namespace BepuPhysics
                     bool skip = false;
                     for (int previousWorkerIndex = 0; previousWorkerIndex < workerIndex; ++previousWorkerIndex)
                     {
-                        Debug.Assert(island.BodyIndices.Count > 0, "Any reported island should have a positive number of bodies in it. Otherwise, there's nothing to deactivate!");
+                        Debug.Assert(island.BodyIndices.Count > 0, "Any reported island should have a positive number of bodies in it. Otherwise, there's nothing to sleep!");
                         if (workerTraversalResults[previousWorkerIndex].TraversedBodies.Contains(island.BodyIndices[0]))
                         {
                             //A previous worker already reported this island. It is a duplicate; skip it.
@@ -759,7 +701,7 @@ namespace BepuPhysics
                         EnsureSetsCapacity(setIndex + 1);
                         bodies.Sets[setIndex] = new BodySet(island.BodyIndices.Count, pool);
                         bodies.Sets[setIndex].Count = island.BodyIndices.Count;
-                        deactivatedBodyCount += island.BodyIndices.Count;
+                        sleptBodyCount += island.BodyIndices.Count;
                         if (island.Protobatches.Count > 0)
                         {
                             ref var constraintSet = ref solver.Sets[setIndex];
@@ -852,7 +794,7 @@ namespace BepuPhysics
             //Note that while we're using the same ConstraintRemover as the narrow phase, we do not need to perform per-body constraint list removals or handle returns.
 
             //We don't want the static tree to resize during removals. That would use the main pool and conflict with the NotifyNarrowPhasePairCache job's usage of the main pool.
-            broadPhase.EnsureCapacity(broadPhase.ActiveTree.LeafCount, broadPhase.StaticTree.LeafCount + deactivatedBodyCount);
+            broadPhase.EnsureCapacity(broadPhase.ActiveTree.LeafCount, broadPhase.StaticTree.LeafCount + sleptBodyCount);
 
             QuickList<RemovalJob, Buffer<RemovalJob>>.Create(pool.SpecializeFor<RemovalJob>(), 4, out removalJobs);
             //The heavier locally sequential jobs are scheduled up front, leaving the smaller later tasks to fill gaps.
@@ -925,7 +867,7 @@ namespace BepuPhysics
                             constraintLocation.SetIndex = setIndex;
                             constraintLocation.BatchIndex = batchIndex;
                             constraintLocation.IndexInTypeBatch = indexInTypeBatch;
-                            Debug.Assert(constraintLocation.TypeId == typeBatch.TypeId, "Deactivating a constraint shouldn't change its type!");
+                            Debug.Assert(constraintLocation.TypeId == typeBatch.TypeId, "Sleeping a constraint shouldn't change its type!");
                         }
                     }
                 }
@@ -939,6 +881,96 @@ namespace BepuPhysics
             constraintRemover.Postflush();
         }
 
+        //TODO: Note that this uses a body index, not a handle. There's an inconsistency there with the awakener.
+        //There's something to be said for giving handles an actual type rather than relying on ints for everything given that we don't have any static type checking otherwise.
+        //TODO: Probably wise to move to spans or something similar so we don't have to rely on our own obtuse types in the public interface.
+        /// <summary>
+        /// Forcefully sleeps a list of bodies and all bodies that can be reached by traversing the constraint graph from those bodies.
+        /// </summary>
+        /// <param name="bodyIndices">List of body indices to sleep.</param>
+        /// <param name="threadDispatcher">Thread dispatcher to use for the sleep attempt, if any. If null, sleep is performed on the calling thread.</param>
+        public void Sleep(ref QuickList<int, Buffer<int>> bodyIndices, IThreadDispatcher threadDispatcher = null)
+        {
+            Sleep(ref bodyIndices, threadDispatcher, int.MaxValue, int.MaxValue, true);
+        }
+
+        /// <summary>
+        /// Forces a body and all bodies that can be found by traversing the constraint graph from that body to go to sleep.
+        /// </summary>
+        /// <param name="bodyIndex">Index of the body to sleep in the active set.</param>
+        public void Sleep(int bodyIndex)
+        {
+            //stackallocing a span would be much nicer here.
+            var intPool = pool.SpecializeFor<int>();
+            QuickList<int, Buffer<int>>.Create(intPool, 1, out var list);
+            list.AllocateUnsafely() = bodyIndex;
+            Sleep(ref list, null);
+            list.Dispose(intPool);
+        }
+
+        internal void Update(IThreadDispatcher threadDispatcher, bool deterministic)
+        {
+            if (bodies.ActiveSet.Count == 0)
+                return;
+
+            int candidateCount = (int)Math.Max(1, bodies.ActiveSet.Count * TestedFractionPerFrame);
+
+            QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), candidateCount, out var traversalStartBodyIndices);
+
+            //Uniformly distribute targets across the active set. Each frame, the targets are pushed up by one slot.
+            int spacing = bodies.ActiveSet.Count / candidateCount;
+
+            //The schedule offset will gradually walk off into the sunset, and there's also a possibility that changes to the size of the active set (by, say, sleep)
+            //will put the offset so far out that a single subtraction by the active set count would be insufficient. So instead we just wrap it to zero.
+            if (scheduleOffset > bodies.ActiveSet.Count)
+            {
+                scheduleOffset = 0;
+            }
+
+            var index = scheduleOffset;
+            for (int i = 0; i < candidateCount; ++i)
+            {
+                if (index >= bodies.ActiveSet.Count)
+                {
+                    index -= bodies.ActiveSet.Count;
+                }
+                traversalStartBodyIndices.AllocateUnsafely() = index;
+                index += spacing;
+            }
+            ++scheduleOffset;
+
+
+            if (deterministic)
+            {
+                //The order in which sleeps occur affects the result of the simulation. To ensure determinism, we need to pin the sleep order to something
+                //which is deterministic. We will use the handle associated with each active body as the order provider.
+                pool.SpecializeFor<int>().Take(bodies.ActiveSet.Count, out var sortedIndices);
+                for (int i = 0; i < bodies.ActiveSet.Count; ++i)
+                {
+                    sortedIndices[i] = i;
+                }
+                //Handles are guaranteed to be unique; no need for three way partitioning.
+                HandleComparer comparer;
+                comparer.Handles = bodies.ActiveSet.IndexToHandle;
+                //TODO: This sort might end up being fairly expensive. On a very large simulation, it might even amount to 5% of the simulation time.
+                //It would be nice to come up with a better solution here. Some options include other sources of determinism, hiding the sort, and possibly enumerating directly over handles.
+                QuickSort.Sort(ref sortedIndices[0], 0, bodies.ActiveSet.Count - 1, ref comparer);
+
+                //Now that we have a sorted set of indices, we have eliminated nondeterminism related to memory layout. The initial target body indices can be remapped onto the sorted list.
+                for (int i = 0; i < traversalStartBodyIndices.Count; ++i)
+                {
+                    traversalStartBodyIndices[i] = sortedIndices[traversalStartBodyIndices[i]];
+                    Debug.Assert(traversalStartBodyIndices[i] >= 0 && traversalStartBodyIndices[i] < bodies.ActiveSet.Count);
+                }
+                pool.SpecializeFor<int>().Return(ref sortedIndices);
+            }
+            var threadCount = threadDispatcher == null ? 1 : threadDispatcher.ThreadCount;
+            var targetSleptBodyCountPerThread = (int)Math.Max(1, bodies.ActiveSet.Count * TargetSleptFraction / threadCount);
+            var targetTraversedBodyCountPerThread = (int)Math.Max(1, bodies.ActiveSet.Count * TargetTraversedFraction / threadCount);
+            Sleep(ref traversalStartBodyIndices, threadDispatcher, targetSleptBodyCountPerThread, targetTraversedBodyCountPerThread, false);
+
+            traversalStartBodyIndices.Dispose(pool.SpecializeFor<int>());
+        }
 
         /// <summary>
         /// Ensures that the Bodies, Solver, and NarrowPhase can hold at least the given number of sets (BodySets for the Bodies collection, ConstraintSets for the Solver, PairSubcaches for the NarrowPhase.PairCache).
@@ -946,7 +978,7 @@ namespace BepuPhysics
         /// <param name="setsCapacity">Number of sets to guarantee space for.</param>
         public void EnsureSetsCapacity(int setsCapacity)
         {
-            var potentiallyAllocatedCount = Math.Min(setIdPool.HighestPossiblyClaimedId + 1, Math.Min(bodies.Sets.Length, Math.Min(solver.Sets.Length, pairCache.InactiveSets.Length)));
+            var potentiallyAllocatedCount = Math.Min(setIdPool.HighestPossiblyClaimedId + 1, Math.Min(bodies.Sets.Length, Math.Min(solver.Sets.Length, pairCache.SleepingSets.Length)));
             if (setsCapacity > bodies.Sets.Length)
             {
                 bodies.ResizeSetsCapacity(setsCapacity, potentiallyAllocatedCount);
@@ -955,7 +987,7 @@ namespace BepuPhysics
             {
                 solver.ResizeSetsCapacity(setsCapacity, potentiallyAllocatedCount);
             }
-            if (setsCapacity > pairCache.InactiveSets.Length)
+            if (setsCapacity > pairCache.SleepingSets.Length)
             {
                 pairCache.ResizeSetsCapacity(setsCapacity, potentiallyAllocatedCount);
             }
@@ -970,7 +1002,7 @@ namespace BepuPhysics
         /// <param name="setsCapacity">Target number of sets to allocate space for.</param>
         public void ResizeSetsCapacity(int setsCapacity)
         {
-            var potentiallyAllocatedCount = Math.Min(setIdPool.HighestPossiblyClaimedId + 1, Math.Min(bodies.Sets.Length, Math.Min(solver.Sets.Length, pairCache.InactiveSets.Length)));
+            var potentiallyAllocatedCount = Math.Min(setIdPool.HighestPossiblyClaimedId + 1, Math.Min(bodies.Sets.Length, Math.Min(solver.Sets.Length, pairCache.SleepingSets.Length)));
             setsCapacity = Math.Max(potentiallyAllocatedCount, setsCapacity);
             bodies.ResizeSetsCapacity(setsCapacity, potentiallyAllocatedCount);
             solver.ResizeSetsCapacity(setsCapacity, potentiallyAllocatedCount);

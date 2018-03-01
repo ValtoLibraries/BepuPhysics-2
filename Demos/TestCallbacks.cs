@@ -31,9 +31,9 @@ namespace Demos
         public bool ConfigureContactManifold(int workerIndex, CollidablePair pair, ContactManifold* manifold, out PairMaterialProperties pairMaterial)
         {
             pairMaterial.FrictionCoefficient = 1;
-            pairMaterial.MaximumRecoveryVelocity = float.MaxValue;
-            pairMaterial.SpringSettings.NaturalFrequency = MathHelper.Pi * 30;
-            pairMaterial.SpringSettings.DampingRatio = 100f;// 100000;
+            pairMaterial.MaximumRecoveryVelocity = 2f;// float.MaxValue;
+            pairMaterial.SpringSettings.NaturalFrequency = MathHelper.Pi * 60;
+            pairMaterial.SpringSettings.DampingRatio = 1f;
             return true;
         }
 
@@ -43,11 +43,6 @@ namespace Demos
             return true;
         }
         
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Flush(IThreadDispatcher threadDispatcher)
-        {
-        }
-
         public void Dispose()
         {
         }

@@ -44,6 +44,16 @@ namespace BepuPhysics
             workerDelegate = Worker;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void RotateInertia(ref Triangular3x3 localInertiaTensor, ref Quaternion orientation, out Triangular3x3 rotatedInertiaTensor)
+        {
+            Matrix3x3.CreateFromQuaternion(ref orientation, out var orientationMatrix);
+            //I^-1 = RT * Ilocal^-1 * R 
+            //NOTE: If you were willing to confuse users a little bit, the local inertia could be required to be diagonal.
+            //This would be totally fine for all the primitive types which happen to have diagonal inertias, but for more complex shapes (convex hulls, meshes), 
+            //there would need to be a reorientation step. That could be confusing, and it's probably not worth it.
+            Triangular3x3.RotationSandwich(ref orientationMatrix, ref localInertiaTensor, out rotatedInertiaTensor);
+        }
 
         unsafe void IntegrateBodies(int startIndex, int endIndex, float dt, ref BoundingBoxUpdater boundingBoxUpdater)
         {
@@ -61,23 +71,23 @@ namespace BepuPhysics
                 var displacement = velocity.Linear * dt;
                 pose.Position += displacement;
 
-                //Update deactivation candidacy. Note that this comes before velocity integration. That means an object can go inactive with gravity-induced velocity.
+                //Update sleep candidacy. Note that this comes before velocity integration. That means an object can go inactive with gravity-induced velocity.
                 //That is actually intended: when the narrowphase wakes up an island, the accumulated impulses in the island will be ready for gravity's influence.
                 //To do otherwise would hurt the solver's guess, reducing the quality of the solve and possibly causing a little bump.
-                //This is only relevant when the update order actually puts the deactivator after gravity. For ease of use, this fact may be ignored by the simulation update order.
+                //This is only relevant when the update order actually puts the sleeper after gravity. For ease of use, this fact may be ignored by the simulation update order.
                 ref var activity = ref Unsafe.Add(ref baseActivity, i);
                 var velocityHeuristic = velocity.Linear.LengthSquared() + velocity.Angular.LengthSquared();
-                if (velocityHeuristic > activity.DeactivationThreshold)
+                if (velocityHeuristic > activity.SleepThreshold)
                 {
                     activity.TimestepsUnderThresholdCount = 0;
-                    activity.DeactivationCandidate = false;
+                    activity.SleepCandidate = false;
                 }
                 else
                 {
                     ++activity.TimestepsUnderThresholdCount;
                     if (activity.TimestepsUnderThresholdCount >= activity.MinimumTimestepsUnderThreshold)
                     {
-                        activity.DeactivationCandidate = true;
+                        activity.SleepCandidate = true;
                     }
                 }
 
@@ -101,12 +111,7 @@ namespace BepuPhysics
                 //This would require a scan through all pose memory to support, but if you do it at the same time as AABB update, that's fine- that stage uses the pose too.
                 ref var localInertias = ref Unsafe.Add(ref baseLocalInertias, i);
                 ref var inertias = ref Unsafe.Add(ref baseInertias, i);
-                Matrix3x3.CreateFromQuaternion(ref pose.Orientation, out var orientationMatrix);
-                //I^-1 = RT * Ilocal^-1 * R 
-                //NOTE: If you were willing to confuse users a little bit, the local inertia could be required to be diagonal.
-                //This would be totally fine for all the primitive types which happen to have diagonal inertias, but for more complex shapes (convex hulls, meshes), 
-                //there would need to be a reorientation step. That could be confusing, and it's probably not worth it.
-                Triangular3x3.RotationSandwich(ref orientationMatrix, ref localInertias.InverseInertiaTensor, out inertias.InverseInertiaTensor);
+                RotateInertia(ref localInertias.InverseInertiaTensor, ref pose.Orientation, out inertias.InverseInertiaTensor);
                 //While it's a bit goofy just to copy over the inverse mass every frame even if it doesn't change,
                 //it's virtually always gathered together with the inertia tensor and it really isn't worth a whole extra external system to copy inverse masses only on demand.
                 inertias.InverseMass = localInertias.InverseMass;
@@ -191,7 +196,7 @@ namespace BepuPhysics
         {
             //For now, the pose integrator (as the first stage that references them in any way) is responsible for ensuring that the bodies have a reasonable size inertias buffer.
             //Note that ownership (for purposes of final disposal) still belongs to the Bodies set.
-            bodies.ResizeIneritas();
+            bodies.EnsureInertiasCapacity(bodies.ActiveSet.Count);
 
             var workerCount = threadDispatcher == null ? 1 : threadDispatcher.ThreadCount;
             gravityDt = Gravity * dt;

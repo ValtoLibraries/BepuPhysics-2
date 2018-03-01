@@ -1,4 +1,5 @@
-﻿using System.Numerics;
+﻿using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace BepuPhysics.Constraints.Contact
@@ -25,7 +26,7 @@ namespace BepuPhysics.Constraints.Contact
             //Note that we use the angularJacobianA (that is, the normal) for both, despite angularJacobianB = -angularJacobianA. That's fine- J * M * JT is going to be positive regardless.
             Triangular3x3Wide.VectorSandwich(ref angularJacobianA, ref inertiaA.InverseInertiaTensor, out var angularA);
             Triangular3x3Wide.VectorSandwich(ref angularJacobianA, ref inertiaB.InverseInertiaTensor, out var angularB);
-    
+
             //No softening; this constraint is rigid by design. (It does support a maximum force, but that is distinct from a proper damping ratio/natural frequency.)
             //Note that we have to guard against two bodies with infinite inertias. This is a valid state! 
             //(We do not have to do such guarding on constraints with linear jacobians; dynamic bodies cannot have zero *mass*.)
@@ -33,11 +34,9 @@ namespace BepuPhysics.Constraints.Contact
             //Invalid conditions can't arise dynamically.)
             var inverseEffectiveMass = angularA + angularB;
             var inverseIsZero = Vector.Equals(Vector<float>.Zero, inverseEffectiveMass);
-            projection.EffectiveMass = Vector.ConditionalSelect(inverseIsZero, Vector<float>.Zero, Vector<float>.One / (angularA + angularB));
+            projection.EffectiveMass = Vector.ConditionalSelect(inverseIsZero, Vector<float>.Zero, Vector<float>.One / inverseEffectiveMass);
 
             //Note that friction constraints have no bias velocity. They target zero velocity.
-
-
         }
 
         /// <summary>
@@ -50,8 +49,8 @@ namespace BepuPhysics.Constraints.Contact
             Vector3Wide.Scale(ref angularJacobianA, ref correctiveImpulse, out var worldCorrectiveImpulseA);
             Triangular3x3Wide.TransformBySymmetricWithoutOverlap(ref worldCorrectiveImpulseA, ref inertiaA.InverseInertiaTensor, out var worldCorrectiveVelocityA);
             Triangular3x3Wide.TransformBySymmetricWithoutOverlap(ref worldCorrectiveImpulseA, ref inertiaB.InverseInertiaTensor, out var worldCorrectiveVelocityB);
-            Vector3Wide.Add(ref wsvA.AngularVelocity, ref worldCorrectiveVelocityA, out wsvA.AngularVelocity);
-            Vector3Wide.Subtract(ref wsvB.AngularVelocity, ref worldCorrectiveVelocityB, out wsvB.AngularVelocity);
+            Vector3Wide.Add(ref wsvA.Angular, ref worldCorrectiveVelocityA, out wsvA.Angular);
+            Vector3Wide.Subtract(ref wsvB.Angular, ref worldCorrectiveVelocityB, out wsvB.Angular);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -62,24 +61,23 @@ namespace BepuPhysics.Constraints.Contact
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void ComputeCorrectiveImpulse(ref Vector3Wide angularJacobianA, ref TwistFrictionProjection projection, 
+        public static void ComputeCorrectiveImpulse(ref Vector3Wide angularJacobianA, ref TwistFrictionProjection projection,
             ref BodyVelocities wsvA, ref BodyVelocities wsvB, ref Vector<float> maximumImpulse,
             ref Vector<float> accumulatedImpulse, out Vector<float> correctiveCSI)
         {
-            Vector3Wide.Dot(ref wsvA.AngularVelocity, ref angularJacobianA, out var csvA);
-            Vector3Wide.Dot(ref wsvB.AngularVelocity, ref angularJacobianA, out var negatedCSVB);
-            var negativeCSI = (csvA + negatedCSVB) * projection.EffectiveMass; //Since there is no bias or softness to give us the negative, we just do it when we apply to the accumulated impulse.
-
+            Vector3Wide.Dot(ref wsvA.Angular, ref angularJacobianA, out var csvA);
+            Vector3Wide.Dot(ref wsvB.Angular, ref angularJacobianA, out var negatedCSVB);
+            var negatedCSI = (csvA - negatedCSVB) * projection.EffectiveMass; //Since there is no bias or softness to give us the negative, we just do it when we apply to the accumulated impulse.
+            
             var previousAccumulated = accumulatedImpulse;
-            //The maximum force of friction depends upon the normal impulse.
-            accumulatedImpulse = Vector.Min(maximumImpulse, Vector.Max(-maximumImpulse, accumulatedImpulse - negativeCSI));
+            accumulatedImpulse = Vector.Min(maximumImpulse, Vector.Max(-maximumImpulse, accumulatedImpulse - negatedCSI));
 
             correctiveCSI = accumulatedImpulse - previousAccumulated;
 
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Solve(ref Vector3Wide angularJacobianA, ref BodyInertias inertiaA, ref BodyInertias inertiaB, ref TwistFrictionProjection projection, 
+        public static void Solve(ref Vector3Wide angularJacobianA, ref BodyInertias inertiaA, ref BodyInertias inertiaB, ref TwistFrictionProjection projection,
             ref Vector<float> maximumImpulse, ref Vector<float> accumulatedImpulse, ref BodyVelocities wsvA, ref BodyVelocities wsvB)
         {
             ComputeCorrectiveImpulse(ref angularJacobianA, ref projection, ref wsvA, ref wsvB, ref maximumImpulse, ref accumulatedImpulse, out var correctiveCSI);

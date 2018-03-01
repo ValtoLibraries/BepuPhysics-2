@@ -10,34 +10,6 @@ using BepuUtilities;
 namespace BepuPhysics.Collidables
 {
     /// <summary>
-    /// Defines a type usable as a shape by collidables.
-    /// </summary>
-    public interface IShape
-    {
-
-        //Note that the shape gathering required for get bounds is also useful for narrow phase calculations.
-        //However, exposing it in a type-safe way isn't trivial. So instead, we just choose at the API level to bundle the gather and AABB calculation together.
-        //Analogously to the bounds calculation, narrow phase pairs will have the type information to directly call the underlying type's gather function.
-        void GetBounds<TShape>(ref Buffer<TShape> shapes, ref Vector<int> shapeIndices, int count, ref QuaternionWide orientations,
-           out Vector<float> maximumRadius, out Vector<float> maximumAngularExpansion, out Vector3Wide min, out Vector3Wide max)
-           where TShape : struct, IShape;
-        //One-off bounds calculations are useful sometimes, even within the engine. Adding individual bodies to the simulation, for example.
-        //(Of course, if you wanted to add a lot of bodies, you'd want to batch everything up and use either cached values or the above bundle bounds calculator, but 
-        //for most use cases, body-adding isn't the bottleneck.)
-        //Note, however, that we do not bother supporting velocity expansion on the one-off variant. For the purposes of adding objects to the simulation, that is basically irrelevant.
-        //I don't predict ever needing it, but such an implementation could be added...
-        void GetBounds(ref BepuUtilities.Quaternion orientation, out Vector3 min, out Vector3 max);
-
-        //These functions require only an orientation because the effect of the position on the bounding box is the same for all shapes.
-        //By isolating the shape from the position, we can more easily swap out the position representation for higher precision modes while only modifying the stuff that actually
-        //deals with positions directly.
-
-        int TypeId { get; }
-    }
-
-
-
-    /// <summary>
     /// Defines a type that acts as a source of data needed for bounding box calculations.
     /// </summary>
     /// <remarks>
@@ -350,6 +322,9 @@ namespace BepuPhysics.Collidables
                     batches.Resize(typeId, new PassthroughArrayPool<ShapeBatch>());
                 }
                 batches.Count = typeId + 1;
+            }
+            if (batches[typeId] == null)
+            {
                 batches[typeId] = new ShapeBatch<TShape>(pool, InitialCapacityPerTypeBatch);
             }
             Debug.Assert(batches[typeId] is ShapeBatch<TShape>);
@@ -371,7 +346,8 @@ namespace BepuPhysics.Collidables
         {
             for (int i = 0; i < batches.Count; ++i)
             {
-                batches[i].Clear();
+                if (batches[i] != null)
+                    batches[i].Clear();
             }
         }
 
@@ -387,7 +363,8 @@ namespace BepuPhysics.Collidables
         {
             for (int i = 0; i < batches.Count; ++i)
             {
-                batches[i].EnsureCapacity(shapeCapacity);
+                if (batches[i] != null)
+                    batches[i].EnsureCapacity(shapeCapacity);
             }
         }
 
@@ -399,7 +376,8 @@ namespace BepuPhysics.Collidables
         {
             for (int i = 0; i < batches.Count; ++i)
             {
-                batches[i].Resize(shapeCapacity);
+                if (batches[i] != null)
+                    batches[i].Resize(shapeCapacity);
             }
         }
 
@@ -410,7 +388,8 @@ namespace BepuPhysics.Collidables
         {
             for (int i = 0; i < batches.Count; ++i)
             {
-                batches[i].Dispose();
+                if (batches[i] != null)
+                    batches[i].Dispose();
             }
         }
     }

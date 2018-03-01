@@ -1,5 +1,6 @@
 ﻿using BepuPhysics;
 using BepuPhysics.Collidables;
+using BepuUtilities;
 using System.Numerics;
 
 namespace Demos
@@ -8,13 +9,13 @@ namespace Demos
     {
         public Vector3 Spacing;
         public Vector3 Origin;
-        public float InverseInertiaMultiplier;
+        public BodyInertia LocalInertia;
         public TypedIndex ShapeIndex;
-        public RegularGridBuilder(Vector3 spacing, Vector3 origin, float inverseInertiaMultiplier = 0, TypedIndex shapeIndex = new TypedIndex())
+        public RegularGridBuilder(Vector3 spacing, Vector3 origin, BodyInertia localInertia, TypedIndex shapeIndex = new TypedIndex())
         {
             Spacing = spacing;
             Origin = origin;
-            InverseInertiaMultiplier = inverseInertiaMultiplier;
+            LocalInertia = localInertia;
             ShapeIndex = shapeIndex;
         }
 
@@ -26,25 +27,24 @@ namespace Demos
                 {
                     Position = new Vector3(columnIndex, rowIndex, sliceIndex) * Spacing + Origin,
                     Orientation = BepuUtilities.Quaternion.Identity
+                    //Orientation = BepuUtilities.Quaternion.CreateFromAxisAngle(Vector3.Normalize(new Vector3(1, 1, 1)), MathHelper.PiOver4 * 9.83f)
+                    //Orientation = BepuUtilities.Quaternion.CreateFromAxisAngle(Vector3.Normalize(new Vector3(0, 1, 0)), rowIndex * MathHelper.Pi * 0.1f)
                 },
-                LocalInertia = new BodyInertia { InverseMass = 1 },
+                LocalInertia = LocalInertia,
                 Collidable = new CollidableDescription
                 {
                     Continuity = new ContinuousDetectionSettings(),
-                    SpeculativeMargin = 0.1f,
+                    SpeculativeMargin = 0.04f,
                     Shape = ShapeIndex
                 },
                 Activity = new BodyActivityDescription
                 {
-                    DeactivationThreshold = .1f,
+                    SleepThreshold = -.1f,
                     MinimumTimestepCountUnderThreshold = 32
-                }
+                },
+                //Velocity = new BodyVelocity { Angular = new Vector3(0, (rowIndex % 2 - 0.5f) * 20, 0) }
+                //Velocity = new BodyVelocity { Angular = new Vector3(1, 0, 0) }
             };
-
-            var inverseInertia = bodyDescription.LocalInertia.InverseMass * InverseInertiaMultiplier;
-            bodyDescription.LocalInertia.InverseInertiaTensor.M11 = inverseInertia;
-            bodyDescription.LocalInertia.InverseInertiaTensor.M22 = inverseInertia;
-            bodyDescription.LocalInertia.InverseInertiaTensor.M33 = inverseInertia;
 
         }
     }
