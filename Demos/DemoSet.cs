@@ -1,4 +1,5 @@
 ﻿using DemoRenderer;
+using Demos.Demos;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -36,11 +37,13 @@ namespace Demos
 
         public DemoSet()
         {
-            AddOption<ConstraintTestDemo>();
+            AddOption<PyramidDemo>();
+            AddOption<BlockChainDemo>();
+            AddOption<ShapePileDemo>();
             AddOption<BasicRagdollDemo>();
-            AddOption<BoxTestDemo>();
-            AddOption<CapsuleTestDemo>();
-            AddOption<SimpleDemo>();
+            AddOption<ClothLatticeDemo>();
+            AddOption<CompoundTestDemo>();
+            AddOption<SphereBlobTestDemo>();
             AddOption<FountainStressTestDemo>();
         }
 

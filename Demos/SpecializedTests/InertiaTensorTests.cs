@@ -43,7 +43,7 @@ namespace Demos.SpecializedTests
 
     public static class InertiaTensorTests
     {
-        static void CheckInertia<TShape, TInertiaTester>(ref TShape shape) where TShape : IShape where TInertiaTester : IInertiaTester<TShape>
+        static void CheckInertia<TShape, TInertiaTester>(ref TShape shape) where TShape : IConvexShape where TInertiaTester : IInertiaTester<TShape>
         {
             var orientation = BepuUtilities.Quaternion.Identity;
             shape.GetBounds(ref orientation, out var min, out var max);
@@ -67,12 +67,12 @@ namespace Demos.SpecializedTests
                         if (tester.PointIsContained(ref shape, ref sampleLocation))
                         {
                             var dd = Vector3.Dot(sampleLocation, sampleLocation);
-                            numericalLocalInertia.M11 += dd - sampleLocation.X * sampleLocation.X;
-                            numericalLocalInertia.M21 += -sampleLocation.X * sampleLocation.Y;
-                            numericalLocalInertia.M22 += dd - sampleLocation.Y * sampleLocation.Y;
-                            numericalLocalInertia.M31 += -sampleLocation.X * sampleLocation.Z;
-                            numericalLocalInertia.M32 += -sampleLocation.Y * sampleLocation.Z;
-                            numericalLocalInertia.M33 += dd - sampleLocation.Z * sampleLocation.Z;
+                            numericalLocalInertia.XX += dd - sampleLocation.X * sampleLocation.X;
+                            numericalLocalInertia.YX += -sampleLocation.X * sampleLocation.Y;
+                            numericalLocalInertia.YY += dd - sampleLocation.Y * sampleLocation.Y;
+                            numericalLocalInertia.ZX += -sampleLocation.X * sampleLocation.Z;
+                            numericalLocalInertia.ZY += -sampleLocation.Y * sampleLocation.Z;
+                            numericalLocalInertia.ZZ += dd - sampleLocation.Z * sampleLocation.Z;
                             ++containedSampleCount;
                         }
                     }
@@ -81,13 +81,13 @@ namespace Demos.SpecializedTests
 
             Triangular3x3.Scale(ref numericalLocalInertia, mass / containedSampleCount, out numericalLocalInertia);
             Triangular3x3.SymmetricInvert(ref numericalLocalInertia, out var numericalLocalInverseInertia);
-            shape.ComputeLocalInverseInertia(1f / mass, out var analyticLocalInverseInertia);
-            if (!ValuesAreSimilar(analyticLocalInverseInertia.M11, numericalLocalInverseInertia.M11) ||
-                !ValuesAreSimilar(analyticLocalInverseInertia.M21, numericalLocalInverseInertia.M21) ||
-                !ValuesAreSimilar(analyticLocalInverseInertia.M22, numericalLocalInverseInertia.M22) ||
-                !ValuesAreSimilar(analyticLocalInverseInertia.M31, numericalLocalInverseInertia.M31) ||
-                !ValuesAreSimilar(analyticLocalInverseInertia.M32, numericalLocalInverseInertia.M32) ||
-                !ValuesAreSimilar(analyticLocalInverseInertia.M33, numericalLocalInverseInertia.M33))
+            shape.ComputeInertia(mass, out var analyticInertia);
+            if (!ValuesAreSimilar(analyticInertia.InverseInertiaTensor.XX, numericalLocalInverseInertia.XX) ||
+                !ValuesAreSimilar(analyticInertia.InverseInertiaTensor.YX, numericalLocalInverseInertia.YX) ||
+                !ValuesAreSimilar(analyticInertia.InverseInertiaTensor.YY, numericalLocalInverseInertia.YY) ||
+                !ValuesAreSimilar(analyticInertia.InverseInertiaTensor.ZX, numericalLocalInverseInertia.ZX) ||
+                !ValuesAreSimilar(analyticInertia.InverseInertiaTensor.ZY, numericalLocalInverseInertia.ZY) ||
+                !ValuesAreSimilar(analyticInertia.InverseInertiaTensor.ZZ, numericalLocalInverseInertia.ZZ))
             {
                 Console.WriteLine("Excessive error in numerical vs analytic inertia tensor.");
             }

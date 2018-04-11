@@ -14,7 +14,7 @@ namespace BepuPhysics.Collidables
     /// <summary>
     /// Collision shape representing a sphere-expanded line segment.
     /// </summary>
-    public struct Capsule : IShape
+    public struct Capsule : IConvexShape
     {
         /// <summary>
         /// Spherical expansion applied to the internal line segment.
@@ -36,39 +36,6 @@ namespace BepuPhysics.Collidables
             HalfLength = length * 0.5f;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Gather(ref Buffer<Capsule> shapes, ref Vector<int> shapeIndices, int count, out CapsuleWide capsules)
-        {
-            ref var radiusBase = ref Unsafe.As<Vector<float>, float>(ref capsules.Radius);
-            ref var halfLengthBase = ref Unsafe.As<Vector<float>, float>(ref capsules.HalfLength);
-            ref var shapeIndicesBase = ref Unsafe.As<Vector<int>, int>(ref shapeIndices);
-            Debug.Assert(count <= Vector<float>.Count);
-            for (int i = 0; i < count; ++i)
-            {
-                ref var shape = ref shapes[Unsafe.Add(ref shapeIndicesBase, i)];
-                Unsafe.Add(ref radiusBase, i) = shape.Radius;
-                Unsafe.Add(ref halfLengthBase, i) = shape.HalfLength;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void GetBounds<TShape>(ref Buffer<TShape> shapes, ref Vector<int> shapeIndices, int count, ref QuaternionWide orientations,
-            out Vector<float> maximumRadius, out Vector<float> maximumAngularExpansion, out Vector3Wide min, out Vector3Wide max)
-            where TShape : struct, IShape
-        {
-            Gather(ref Unsafe.As<Buffer<TShape>, Buffer<Capsule>>(ref shapes), ref shapeIndices, count, out var capsules);
-            QuaternionWide.TransformUnitY(ref orientations, out var segmentOffset);
-            Vector3Wide.Scale(ref segmentOffset, ref capsules.HalfLength, out segmentOffset);
-            Vector3Wide.Abs(ref segmentOffset, out segmentOffset);
-
-            //The half length extends symmetrically along positive local Y and negative local Y.
-            Vector3Wide.Add(ref segmentOffset, ref capsules.Radius, out max);
-            Vector3Wide.Negate(ref max, out min);
-
-            maximumRadius = capsules.HalfLength + capsules.Radius;
-            //The minimum radius is capsules.Radius, so the maximum offset is simply the half length.
-            maximumAngularExpansion = capsules.HalfLength;
-        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void GetBounds(ref Quaternion orientation, out Vector3 min, out Vector3 max)
@@ -177,9 +144,9 @@ namespace BepuPhysics.Collidables
 
         }
 
-        public void ComputeLocalInverseInertia(float inverseMass, out Triangular3x3 localInverseInertia)
+        public void ComputeInertia(float mass, out BodyInertia inertia)
         {
-
+            inertia.InverseMass = 1f / mass;
             var r2 = Radius * Radius;
             var h2 = HalfLength * HalfLength;
             var cylinderVolume = 2 * HalfLength * r2 * MathHelper.Pi;
@@ -188,15 +155,22 @@ namespace BepuPhysics.Collidables
             //Volume is in units of the capsule's whole volume.
             cylinderVolume *= inverseTotal;
             sphereVolume *= inverseTotal;
-            localInverseInertia.M11 = inverseMass / (
+            inertia.InverseInertiaTensor.XX = inertia.InverseMass / (
                 cylinderVolume * ((3f / 12f) * r2 + (4f / 12f) * h2) +
                 sphereVolume * ((2f / 5f) * r2 + (6f / 8f) * Radius * HalfLength + h2));
-            localInverseInertia.M21 = 0;
-            localInverseInertia.M22 = inverseMass / (cylinderVolume * (1f / 2f) * r2 + sphereVolume * (2f / 5f) * r2);
-            localInverseInertia.M31 = 0;
-            localInverseInertia.M32 = 0;
-            localInverseInertia.M33 = localInverseInertia.M11;            
+            inertia.InverseInertiaTensor.YX = 0;
+            inertia.InverseInertiaTensor.YY = inertia.InverseMass / (cylinderVolume * (1f / 2f) * r2 + sphereVolume * (2f / 5f) * r2);
+            inertia.InverseInertiaTensor.ZX = 0;
+            inertia.InverseInertiaTensor.ZY = 0;
+            inertia.InverseInertiaTensor.ZZ = inertia.InverseInertiaTensor.XX;
         }
+
+        public ShapeBatch CreateShapeBatch(BufferPool pool, int initialCapacity, Shapes shapeBatches)
+        {
+            return new ConvexShapeBatch<Capsule, CapsuleWide>(pool, initialCapacity);
+        }
+
+
 
         /// <summary>
         /// Type id of capsule shapes.
@@ -214,6 +188,22 @@ namespace BepuPhysics.Collidables
         {
             Unsafe.As<Vector<float>, float>(ref Radius) = source.Radius;
             Unsafe.As<Vector<float>, float>(ref HalfLength) = source.HalfLength;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void GetBounds(ref QuaternionWide orientations, out Vector<float> maximumRadius, out Vector<float> maximumAngularExpansion, out Vector3Wide min, out Vector3Wide max)
+        {
+            QuaternionWide.TransformUnitY(ref orientations, out var segmentOffset);
+            Vector3Wide.Scale(ref segmentOffset, ref HalfLength, out segmentOffset);
+            Vector3Wide.Abs(ref segmentOffset, out segmentOffset);
+
+            //The half length extends symmetrically along positive local Y and negative local Y.
+            Vector3Wide.Add(ref segmentOffset, ref Radius, out max);
+            Vector3Wide.Negate(ref max, out min);
+
+            maximumRadius = HalfLength + Radius;
+            //The minimum radius is capsules.Radius, so the maximum offset is simply the half length.
+            maximumAngularExpansion = HalfLength;
         }
     }
 }

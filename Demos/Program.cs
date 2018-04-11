@@ -1,14 +1,8 @@
-﻿using BepuPhysics.Collidables;
-using BepuUtilities;
-using BepuUtilities.Memory;
+﻿using BepuUtilities;
 using DemoContentLoader;
 using DemoRenderer.UI;
-using Demos.Properties;
-using Demos.SpecializedTests;
 using DemoUtilities;
 using OpenTK;
-using System.Diagnostics;
-using System.IO;
 
 namespace Demos
 {
@@ -16,14 +10,11 @@ namespace Demos
     {
         static void Main(string[] args)
         {
-            //ConstraintDescriptionMappingTests.Test();
-            //Console.ReadKey();
-
             var window = new Window("pretty cool multicolored window",
                 new Int2((int)(DisplayDevice.Default.Width * 0.75f), (int)(DisplayDevice.Default.Height * 0.75f)), WindowMode.Windowed);
             var loop = new GameLoop(window);
             ContentArchive content;
-            using (var stream = new MemoryStream(Resources.Content))
+            using (var stream = typeof(Program).Assembly.GetManifestResourceStream("Demos.Demos.contentarchive"))
             {
                 content = ContentArchive.Load(stream);
             }
@@ -34,7 +25,6 @@ namespace Demos
             loop.Run(demo);
             loop.Dispose();
             window.Dispose();
-
         }
     }
 }

@@ -1,4 +1,5 @@
 ﻿using BepuPhysics.Collidables;
+using BepuUtilities;
 using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -8,13 +9,13 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
     //Individual pair testers are designed to be used outside of the narrow phase. They need to be usable for queries and such, so all necessary data must be gathered externally.
     public struct SphereBoxTester : IPairTester<SphereWide, BoxWide, Convex1ContactManifoldWide>
     {
-        public void Test(ref SphereWide a, ref BoxWide b, ref Vector3Wide offsetB, ref QuaternionWide orientationA, ref QuaternionWide orientationB, out Convex1ContactManifoldWide manifold)
+        public void Test(ref SphereWide a, ref BoxWide b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, ref QuaternionWide orientationA, ref QuaternionWide orientationB, out Convex1ContactManifoldWide manifold)
         {
             throw new NotImplementedException();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Test(ref SphereWide a, ref BoxWide b, ref Vector3Wide offsetB, ref QuaternionWide orientationB, out Convex1ContactManifoldWide manifold)
+        public void Test(ref SphereWide a, ref BoxWide b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, ref QuaternionWide orientationB, out Convex1ContactManifoldWide manifold)
         {
             //Clamp the position of the sphere to the box.
             Matrix3x3Wide.CreateFromQuaternion(ref orientationB, out var orientationMatrixB);
@@ -56,10 +57,11 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
             //The contact position relative to object A (the sphere) is computed as the average of the extreme point along the normal toward the opposing shape on each shape, averaged.
             //For capsule-sphere, this can be computed from the normal and depth.
             var negativeOffsetFromSphere = manifold.Depth * 0.5f - a.Radius;
-            Vector3Wide.Scale(ref manifold.Normal, ref negativeOffsetFromSphere, out manifold.OffsetA0);
+            Vector3Wide.Scale(ref manifold.Normal, ref negativeOffsetFromSphere, out manifold.OffsetA);
+            manifold.ContactExists = Vector.GreaterThan(manifold.Depth, -speculativeMargin);
         }
 
-        public void Test(ref SphereWide a, ref BoxWide b, ref Vector3Wide offsetB, out Convex1ContactManifoldWide manifold)
+        public void Test(ref SphereWide a, ref BoxWide b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, out Convex1ContactManifoldWide manifold)
         {
             throw new NotImplementedException();
         }
@@ -76,12 +78,12 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
 
 
         //Every single collision task type will mirror this general layout.
-        public unsafe override void ExecuteBatch<TContinuations, TFilters>(ref UntypedList batch, ref StreamingBatcher batcher, ref TContinuations continuations, ref TFilters filters)
+        public unsafe override void ExecuteBatch<TCallbacks>(ref UntypedList batch, ref CollisionBatcher<TCallbacks> batcher)
         {
-            CollisionTaskCommon.ExecuteBatch
-                <TContinuations, TFilters,
+            ConvexCollisionTaskCommon.ExecuteBatch
+                <TCallbacks,
                 Sphere, SphereWide, Box, BoxWide, OneOrientationTestPairWide<Sphere, SphereWide, Box, BoxWide>,
-                Convex1ContactManifoldWide, SphereBoxTester>(ref batch, ref batcher, ref continuations, ref filters);
+                Convex1ContactManifoldWide, SphereBoxTester>(ref batch, ref batcher);
         }
     }
 }

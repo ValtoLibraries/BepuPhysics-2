@@ -192,14 +192,7 @@ namespace BepuPhysics.CollisionDetection
                         //We initialize and sort those lists on multiple threads.
                         ref var list = ref sortedConstraints[job.TypeIndex];
                         //One and two body constraints require separate initialization to work in a single pass with a minimum of last second branches.
-                        //Use the type index to determine the body count.
-                        //This follows the same convention as the GatherOldImpulses and ScatterNewImpulses of the PairCache.
-                        //Constraints cover 16 possible cases:
-                        //1-4 contacts: 0x3
-                        //convex vs nonconvex: 0x4
-                        //1 body versus 2 body: 0x8
-                        //TODO: Very likely that we'll expand the nonconvex manifold maximum to 8 contacts, so this will need to be adjusted later.
-                        if (job.TypeIndex >= 8)
+                        if (ExtractContactConstraintBodyCount(job.TypeIndex) == 2)
                         {
                             BuildSortingTargets<TwoBodyHandleCollector>(ref list, job.TypeIndex, job.WorkerCount);
                         }
@@ -262,7 +255,10 @@ namespace BepuPhysics.CollisionDetection
                 //This will tend to significantly overestimate the true set requirement, but that's not concerning- the maximum allocation won't be troublesome regardless.
                 setsToAwakenCapacity += overlapWorkers[i].PendingSetAwakenings.Count;
             }
-            PairCache.EnsureConstraintToPairMappingCapacity(Solver, Solver.HandlePool.HighestPossiblyClaimedId + 1 + newConstraintCount);
+            var targetConstraintCapacity = Solver.HandlePool.HighestPossiblyClaimedId + 1 + newConstraintCount;
+            PairCache.EnsureConstraintToPairMappingCapacity(Solver, targetConstraintCapacity);
+            //Do the same for the main solver handle set. We make use of the Solver.HandleToLocation frequently; a resize would break stuff.
+            Solver.EnsureSolverCapacities(1, targetConstraintCapacity);
             QuickList<int, Buffer<int>>.Create(Pool.SpecializeFor<int>(), setsToAwakenCapacity, out var setsToAwaken);
             var uniqueAwakeningsSet = new IndexSet(Pool, Simulation.Bodies.Sets.Length);
             for (int i = 0; i < threadCount; ++i)
@@ -272,7 +268,7 @@ namespace BepuPhysics.CollisionDetection
             uniqueAwakeningsSet.Dispose(Pool);
             for (int i = 0; i < threadCount; ++i)
             {
-                overlapWorkers[i].PendingSetAwakenings.Dispose(overlapWorkers[i].Batcher.pool.SpecializeFor<int>());
+                overlapWorkers[i].PendingSetAwakenings.Dispose(overlapWorkers[i].Batcher.Pool.SpecializeFor<int>());
             }
             (int awakenerPhaseOneJobCount, int awakenerPhaseTwoJobCount) = Simulation.Awakener.PrepareJobs(ref setsToAwaken, false, threadCount);
             if (threadCount > 1)

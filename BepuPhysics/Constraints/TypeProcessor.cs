@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using BepuUtilities.Collections;
+using BepuUtilities;
 
 namespace BepuPhysics.Constraints
 {
@@ -280,10 +281,6 @@ namespace BepuPhysics.Constraints
                     ref typeBatch.IndexToHandle[index], targetInnerIndex, index,
                     ref handlesToConstraints);
             }
-            //TODO: Is clearing the body references even required anymore? Pretty sure it's not, but we need to confirm. 
-            //If you don't read or write using data outside the count, then you don't need it.
-            ref var bundle = ref Unsafe.Add(ref bodyReferences, sourceBundleIndex);
-            GatherScatter.ClearLane<TBodyReferences, int>(ref bundle, sourceInnerIndex);
         }
 
         /// <summary>

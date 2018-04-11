@@ -15,72 +15,60 @@ namespace Demos.SpecializedTests
 {
     public static class BatchedCollisionTests
     {
-        struct ContinuationsTest : IContinuations
+        struct TestCollisionCallbacks : ICollisionCallbacks
         {
             public int Count;
-            public unsafe void Notify(ContinuationIndex continuationId, ContactManifold* manifold)
+
+            public unsafe void OnPairCompleted(int pairId, ConvexContactManifold* manifold)
             {
-                //Console.WriteLine($"Completed {continuationId}:");
-                //var normals = &manifold->Normal0;
-                //var offsets = &manifold->Offset0;
-                //var depths = &manifold->Depth0;
-                //if (manifold->Convex)
-                //{
-                //    for (int i = 0; i < manifold->ContactCount; ++i)
-                //    {
-                //        Console.WriteLine($"{i}: P: {offsets[i]}, N: {manifold->ConvexNormal}, D: {depths[i]}");
-                //    }
-                //}
-                //else
-                //{
-                //    for (int i = 0; i < manifold->ContactCount; ++i)
-                //    {
-                //        Console.WriteLine($"{i}: P: {offsets[i]}, N: {normals[i]}, D: {depths[i]}");
-                //    }
-                //}
-                var extra = 1e-16 * (manifold->Depth0 + manifold->Offset0.X + manifold->Normal0.X);
+                ref var contact = ref manifold->Contact0;
+                var extra = 1e-16 * (contact.Depth + contact.Offset.X + manifold->Normal.X);
                 Count += 1 + (int)extra;
             }
-        }
-        struct SubtaskFiltersTest : ICollisionSubtaskFilters
-        {
-            public bool AllowCollisionTesting(CollidablePair parent, int childA, int childB)
+            public unsafe void OnPairCompleted(int pairId, NonconvexContactManifold* manifold)
+            {
+                ref var contact = ref manifold->Contact0;
+                var extra = 1e-16 * (contact.Depth + contact.Offset.X + contact.Normal.X);
+                Count += 1 + (int)extra;
+            }
+            public unsafe void OnChildPairCompleted(int pairId, int childA, int childB, ConvexContactManifold* manifold)
+            {
+            }
+
+            public bool AllowCollisionTesting(int pairId, int childA, int childB)
             {
                 return true;
             }
 
-            public unsafe void Configure(CollidablePair parent, int childA, int childB, ContactManifold* manifold)
-            {
-            }
         }
 
+
         static void TestPair<TA, TB>(ref TA a, ref TB b, ref RigidPose poseA, ref RigidPose poseB,
-            ref ContinuationsTest continuations, ref SubtaskFiltersTest filters, BufferPool pool, CollisionTaskRegistry registry, int iterationCount)
+            ref TestCollisionCallbacks callbacks, BufferPool pool, Shapes shapes, CollisionTaskRegistry registry, int iterationCount)
             where TA : struct, IShape where TB : struct, IShape
         {
-            var batcher = new StreamingBatcher(pool, registry);
+            var batcher = new CollisionBatcher<TestCollisionCallbacks>(pool, shapes, registry, callbacks);
             for (int i = 0; i < iterationCount; ++i)
             {
-                batcher.Add(ref a, ref b, ref poseA, ref poseB, new ContinuationIndex(0, 0, 0), ref continuations, ref filters);
-                batcher.Add(ref a, ref b, ref poseA, ref poseB, new ContinuationIndex(0, 0, 0), ref continuations, ref filters);
-                batcher.Add(ref a, ref b, ref poseA, ref poseB, new ContinuationIndex(0, 0, 0), ref continuations, ref filters);
-                batcher.Add(ref a, ref b, ref poseA, ref poseB, new ContinuationIndex(0, 0, 0), ref continuations, ref filters);
+                batcher.Add(a, b, ref poseA, ref poseB, 0.1f, 0);
+                batcher.Add(a, b, ref poseA, ref poseB, 0.1f, 0);
+                batcher.Add(a, b, ref poseA, ref poseB, 0.1f, 0);
+                batcher.Add(a, b, ref poseA, ref poseB, 0.1f, 0);
             }
-            batcher.Flush(ref continuations, ref filters);
+            batcher.Flush();
         }
 
         static void Test<TA, TB>(ref TA a, ref TB b, ref RigidPose poseA, ref RigidPose poseB,
-            BufferPool pool, CollisionTaskRegistry registry, int iterationCount)
+            BufferPool pool, Shapes shapes, CollisionTaskRegistry registry, int iterationCount)
                         where TA : struct, IShape where TB : struct, IShape
         {
-            var continuations = new ContinuationsTest();
-            var filters = new SubtaskFiltersTest();
-            TestPair(ref a, ref b, ref poseA, ref poseB, ref continuations, ref filters, pool, registry, 64);
+            var callbacks = new TestCollisionCallbacks();
+            TestPair(ref a, ref b, ref poseA, ref poseB, ref callbacks, pool, shapes, registry, 64);
             var start = Stopwatch.GetTimestamp();
-            TestPair(ref a, ref b, ref poseA, ref poseB, ref continuations, ref filters, pool, registry, iterationCount);
+            TestPair(ref a, ref b, ref poseA, ref poseB, ref callbacks, pool, shapes, registry, iterationCount);
             var end = Stopwatch.GetTimestamp();
             var time = (end - start) / (double)Stopwatch.Frequency;
-            Console.WriteLine($"Completed {continuations.Count} {typeof(TA).Name}-{typeof(TB).Name} pairs, time (ms): {1e3 * time}, time per pair (ns): {1e9 * time / continuations.Count}");
+            Console.WriteLine($"Completed {callbacks.Count} {typeof(TA).Name}-{typeof(TB).Name} pairs, time (ms): {1e3 * time}, time per pair (ns): {1e9 * time / callbacks.Count}");
         }
 
 
@@ -100,13 +88,14 @@ namespace Demos.SpecializedTests
             var box = new Box(1f, 1f, 1f);
             var poseA = new RigidPose { Position = new Vector3(0, 0, 0), Orientation = BepuUtilities.Quaternion.Identity };
             var poseB = new RigidPose { Position = new Vector3(0, 1, 0), Orientation = BepuUtilities.Quaternion.Identity };
+            Shapes shapes = new Shapes(pool, 32);
 
-            Test(ref sphere, ref sphere, ref poseA, ref poseB, pool, registry, 1 << 25);
-            Test(ref sphere, ref capsule, ref poseA, ref poseB, pool, registry, 1 << 25);
-            Test(ref sphere, ref box, ref poseA, ref poseB, pool, registry, 1 << 25);
-            Test(ref capsule, ref capsule, ref poseA, ref poseB, pool, registry, 1 << 25);
-            Test(ref capsule, ref box, ref poseA, ref poseB, pool, registry, 1 << 25);
-            Test(ref box, ref box, ref poseA, ref poseB, pool, registry, 1 << 25);
+            Test(ref sphere, ref sphere, ref poseA, ref poseB, pool, shapes, registry, 1 << 25);
+            Test(ref sphere, ref capsule, ref poseA, ref poseB, pool, shapes, registry, 1 << 25);
+            Test(ref sphere, ref box, ref poseA, ref poseB, pool, shapes, registry, 1 << 25);
+            Test(ref capsule, ref capsule, ref poseA, ref poseB, pool, shapes, registry, 1 << 25);
+            Test(ref capsule, ref box, ref poseA, ref poseB, pool, shapes, registry, 1 << 25);
+            Test(ref box, ref box, ref poseA, ref poseB, pool, shapes, registry, 1 << 25);
             Console.ReadKey();
         }
     }

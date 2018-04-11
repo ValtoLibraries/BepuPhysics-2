@@ -5,24 +5,17 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Quaternion = BepuUtilities.Quaternion;
-using static BepuPhysics.GatherScatter;
+using static BepuUtilities.GatherScatter;
+using BepuUtilities;
+
 namespace BepuPhysics.Constraints.Contact
 {
-
-    public struct ManifoldContactData
+    public struct Contact4 : IConvexTwoBodyContactConstraintDescription<Contact4>
     {
-        //TODO: Arguably storing this to match the prestep layout would be a better idea for contiguity. Consider it later.
-        public Vector3 OffsetA;
-        public float PenetrationDepth;
-    }
-
-
-    public struct Contact4 : IConstraintDescription<Contact4>
-    {
-        public ManifoldContactData Contact0;
-        public ManifoldContactData Contact1;
-        public ManifoldContactData Contact2;
-        public ManifoldContactData Contact3;
+        public ConstraintContactData Contact0;
+        public ConstraintContactData Contact1;
+        public ConstraintContactData Contact2;
+        public ConstraintContactData Contact3;
         public Vector3 OffsetB;
         public float FrictionCoefficient;
         public Vector3 Normal;
@@ -56,8 +49,8 @@ namespace BepuPhysics.Constraints.Contact
             GetFirst(ref target.Normal.Y) = Normal.Y;
             GetFirst(ref target.Normal.Z) = Normal.Z;
 
-            GetFirst(ref target.SpringSettings.NaturalFrequency) = SpringSettings.NaturalFrequency;
-            GetFirst(ref target.SpringSettings.DampingRatio) = SpringSettings.DampingRatio;
+            GetFirst(ref target.SpringSettings.AngularFrequency) = SpringSettings.AngularFrequency;
+            GetFirst(ref target.SpringSettings.TwiceDampingRatio) = SpringSettings.TwiceDampingRatio;
             GetFirst(ref target.MaximumRecoveryVelocity) = MaximumRecoveryVelocity;
 
             GetFirst(ref target.PenetrationDepth0) = Contact0.PenetrationDepth;
@@ -94,8 +87,8 @@ namespace BepuPhysics.Constraints.Contact
             description.Normal.Y = GetFirst(ref source.Normal.Y);
             description.Normal.Z = GetFirst(ref source.Normal.Z);
 
-            description.SpringSettings.NaturalFrequency = GetFirst(ref source.SpringSettings.NaturalFrequency);
-            description.SpringSettings.DampingRatio = GetFirst(ref source.SpringSettings.DampingRatio);
+            description.SpringSettings.AngularFrequency = GetFirst(ref source.SpringSettings.AngularFrequency);
+            description.SpringSettings.TwiceDampingRatio = GetFirst(ref source.SpringSettings.TwiceDampingRatio);
             description.MaximumRecoveryVelocity = GetFirst(ref source.MaximumRecoveryVelocity);
 
             description.Contact0.PenetrationDepth = GetFirst(ref source.PenetrationDepth0);
@@ -103,6 +96,16 @@ namespace BepuPhysics.Constraints.Contact
             description.Contact2.PenetrationDepth = GetFirst(ref source.PenetrationDepth2);
             description.Contact3.PenetrationDepth = GetFirst(ref source.PenetrationDepth3);
 
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void CopyManifoldWideProperties(ref Vector3 offsetB, ref Vector3 normal, ref PairMaterialProperties material)
+        {
+            OffsetB = offsetB;
+            FrictionCoefficient = material.FrictionCoefficient;
+            Normal = normal;
+            SpringSettings = material.SpringSettings;
+            MaximumRecoveryVelocity = material.MaximumRecoveryVelocity;
         }
 
         public int ConstraintTypeId
@@ -257,6 +260,6 @@ namespace BepuPhysics.Constraints.Contact
         //UnposedTwoBodyTypeBatch<ContactManifold4PrestepData, ContactManifold4Projection, ContactManifold4AccumulatedImpulses, ContactManifold4>
         TwoBodyTypeProcessor<Contact4PrestepData, Contact4Projection, Contact4AccumulatedImpulses, Contact4Functions>
     {
-        public const int BatchTypeId = 11;
+        public const int BatchTypeId = 7;
     }
 }

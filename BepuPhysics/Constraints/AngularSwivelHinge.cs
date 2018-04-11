@@ -1,10 +1,11 @@
 ﻿using BepuPhysics.CollisionDetection;
+using BepuUtilities;
 using BepuUtilities.Memory;
 using System;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using static BepuPhysics.GatherScatter;
+using static BepuUtilities.GatherScatter;
 namespace BepuPhysics.Constraints
 {
     public struct AngularSwivelHinge : IConstraintDescription<AngularSwivelHinge>
@@ -34,8 +35,8 @@ namespace BepuPhysics.Constraints
             GetFirst(ref target.HingeAxisLocalB.X) = HingeAxisLocalB.X;
             GetFirst(ref target.HingeAxisLocalB.Y) = HingeAxisLocalB.Y;
             GetFirst(ref target.HingeAxisLocalB.Z) = HingeAxisLocalB.Z;
-            GetFirst(ref target.SpringSettings.NaturalFrequency) = SpringSettings.NaturalFrequency;
-            GetFirst(ref target.SpringSettings.DampingRatio) = SpringSettings.DampingRatio;
+            GetFirst(ref target.SpringSettings.AngularFrequency) = SpringSettings.AngularFrequency;
+            GetFirst(ref target.SpringSettings.TwiceDampingRatio) = SpringSettings.TwiceDampingRatio;
         }
 
         public void BuildDescription(ref TypeBatch batch, int bundleIndex, int innerIndex, out AngularSwivelHinge description)
@@ -48,8 +49,8 @@ namespace BepuPhysics.Constraints
             description.HingeAxisLocalB.X = GetFirst(ref source.HingeAxisLocalB.X);
             description.HingeAxisLocalB.Y = GetFirst(ref source.HingeAxisLocalB.Y);
             description.HingeAxisLocalB.Z = GetFirst(ref source.HingeAxisLocalB.Z);
-            description.SpringSettings.NaturalFrequency = GetFirst(ref source.SpringSettings.NaturalFrequency);
-            description.SpringSettings.DampingRatio = GetFirst(ref source.SpringSettings.DampingRatio);
+            description.SpringSettings.AngularFrequency = GetFirst(ref source.SpringSettings.AngularFrequency);
+            description.SpringSettings.TwiceDampingRatio = GetFirst(ref source.SpringSettings.TwiceDampingRatio);
         }
     }
 
@@ -113,7 +114,7 @@ namespace BepuPhysics.Constraints
             Vector3Wide.Dot(ref projection.ImpulseToVelocityA, ref jacobianA, out var angularA);
             Vector3Wide.Dot(ref projection.NegatedImpulseToVelocityB, ref jacobianA, out var angularB);
 
-            Springiness.ComputeSpringiness(ref prestep.SpringSettings, dt, out var positionErrorToVelocity, out var effectiveMassCFMScale, out projection.SoftnessImpulseScale);
+            SpringSettings.ComputeSpringiness(ref prestep.SpringSettings, dt, out var positionErrorToVelocity, out var effectiveMassCFMScale, out projection.SoftnessImpulseScale);
             var effectiveMass = effectiveMassCFMScale / (angularA + angularB);
             Vector3Wide.Scale(ref jacobianA, ref effectiveMass, out projection.VelocityToImpulseA);
             
@@ -155,7 +156,7 @@ namespace BepuPhysics.Constraints
 
     public class AngularSwivelHingeTypeProcessor : TwoBodyTypeProcessor<AngularSwivelHingePrestepData, AngularSwivelHingeProjection, Vector<float>, AngularSwivelHingeFunctions>
     {
-        public const int BatchTypeId = 18;
+        public const int BatchTypeId = 24;
     }
 }
 

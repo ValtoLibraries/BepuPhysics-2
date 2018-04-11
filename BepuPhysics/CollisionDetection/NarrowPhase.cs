@@ -236,7 +236,6 @@ namespace BepuPhysics.CollisionDetection
 
     }
 
-
     /// <summary>
     /// Turns broad phase overlaps into contact manifolds and uses them to manage constraints in the solver.
     /// </summary>
@@ -244,7 +243,23 @@ namespace BepuPhysics.CollisionDetection
     public partial class NarrowPhase<TCallbacks> : NarrowPhase where TCallbacks : struct, INarrowPhaseCallbacks
     {
         public TCallbacks Callbacks;
+        public struct OverlapWorker
+        {
+            public CollisionBatcher<CollisionCallbacks> Batcher;
+            public PendingConstraintAddCache PendingConstraints;
+            public QuickList<int, Buffer<int>> PendingSetAwakenings;
 
+            public OverlapWorker(int workerIndex, BufferPool pool, NarrowPhase<TCallbacks> narrowPhase)
+            {
+                //Note that we give ownership of the 
+                Batcher = new CollisionBatcher<CollisionCallbacks>(pool, narrowPhase.Shapes, narrowPhase.CollisionTaskRegistry,
+                    new CollisionCallbacks(workerIndex, pool, narrowPhase));
+                PendingConstraints = new PendingConstraintAddCache(pool);
+                QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), 16, out PendingSetAwakenings);
+            }
+        }
+
+        internal OverlapWorker[] overlapWorkers;
 
         public NarrowPhase(Simulation simulation, CollisionTaskRegistry collisionTaskRegistry, TCallbacks callbacks,
              int initialSetCapacity, int minimumMappingSize = 2048, int minimumPendingSize = 128, int minimumPerTypeCapacity = 128)
@@ -267,7 +282,15 @@ namespace BepuPhysics.CollisionDetection
 
         protected override void OnPrepare(IThreadDispatcher threadDispatcher)
         {
-            PrepareOverlapWorkers(threadDispatcher);
+            var threadCount = threadDispatcher == null ? 1 : threadDispatcher.ThreadCount;
+            //Resizes should be very rare, and having a single extra very small array isn't concerning.
+            //(It's not an unmanaged type because it contains nonblittable references.)
+            if (overlapWorkers == null || overlapWorkers.Length < threadCount)
+                Array.Resize(ref overlapWorkers, threadCount);
+            for (int i = 0; i < threadCount; ++i)
+            {
+                overlapWorkers[i] = new OverlapWorker(i, threadDispatcher != null ? threadDispatcher.GetThreadMemoryPool(i) : Pool, this);
+            }
         }
 
         protected override void OnPostflush(IThreadDispatcher threadDispatcher)
@@ -275,7 +298,11 @@ namespace BepuPhysics.CollisionDetection
             //TODO: Constraint generators can actually be disposed immediately once the overlap finding process completes.
             //Here, we are disposing them late- that means we suffer a little more wasted memory use. 
             //If you actually wanted to address this, you could add in an OnPreflush or similar.
-            DisposeConstraintGenerators(threadDispatcher == null ? 1 : threadDispatcher.ThreadCount);
+            var threadCount = threadDispatcher == null ? 1 : threadDispatcher.ThreadCount;
+            for (int i = 0; i < threadCount; ++i)
+            {
+                overlapWorkers[i].Batcher.Callbacks.Dispose();
+            }
         }
 
         protected override void OnDispose()
@@ -344,10 +371,6 @@ namespace BepuPhysics.CollisionDetection
             ref RigidPose poseA, ref RigidPose poseB, ref BodyVelocity velocityA, ref BodyVelocity velocityB)
         {
             Debug.Assert(pair.A.Packed != pair.B.Packed);
-            var shapeTypeA = aCollidable.Shape.Type;
-            var shapeTypeB = bCollidable.Shape.Type;
-            Shapes[shapeTypeA].GetShapeData(aCollidable.Shape.Index, out var shapePointerA, out var shapeSizeA);
-            Shapes[shapeTypeB].GetShapeData(bCollidable.Shape.Index, out var shapePointerB, out var shapeSizeB);
             //Note that we never create 'unilateral' CCD pairs. That is, if either collidable in a pair enables a CCD feature, we just act like both are using it.
             //That keeps things a little simpler. Unlike v1, we don't have to worry about the implications of 'motion clamping' here- no need for deeper configuration.
             var useSubstepping = aCollidable.Continuity.UseSubstepping || bCollidable.Continuity.UseSubstepping;
@@ -373,9 +396,8 @@ namespace BepuPhysics.CollisionDetection
             else
             {
                 //This pair uses no CCD beyond its speculative margin.
-                var continuation = overlapWorker.ConstraintGenerators.AddDiscrete(ref pair, speculativeMargin);
-                overlapWorker.Batcher.Add(shapeTypeA, shapeTypeB, shapeSizeA, shapeSizeB, shapePointerA, shapePointerB, ref poseA, ref poseB, continuation,
-                    ref overlapWorker.ConstraintGenerators, ref overlapWorker.Filters);
+                var continuation = overlapWorker.Batcher.Callbacks.AddDiscrete(ref pair);
+                overlapWorker.Batcher.Add(aCollidable.Shape, bCollidable.Shape, ref poseA, ref poseB, speculativeMargin, (int)continuation.Packed);
             }
             ////Pull the velocity information for all involved bodies. We will request a number of steps that will cover the motion path.
             ////number of substeps = min(maximum substep count, 1 + floor(estimated displacement / step length)), where

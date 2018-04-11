@@ -9,75 +9,6 @@ using BepuUtilities;
 
 namespace BepuPhysics.Collidables
 {
-    /// <summary>
-    /// Defines a type that acts as a source of data needed for bounding box calculations.
-    /// </summary>
-    /// <remarks>
-    /// Collidables may be pulled from objects directly in the world or from compound children. Compound children have to pull and compute information from the parent compound,
-    /// and the result of the calculation has to be pushed back to the compound parent for further processing. In contrast, body collidables that live natively in the space simply
-    /// gather data directly from the bodies set and scatter bounds directly into the broad phase.
-    /// </remarks>
-    public interface ICollidableBundleSource
-    {
-        /// <summary>
-        /// Gets the number of collidables in this set of bundles.
-        /// </summary>
-        int Count { get; }
-        /// <summary>
-        /// Gathers collidable data required to calculate the bounding boxes for a bundle.
-        /// </summary>
-        /// <param name="collidablesStartIndex">Start index of the bundle in the collidables set to gather bounding box relevant data for.</param>
-        void GatherCollidableBundle(int collidablesStartIndex, int count, out Vector<int> shapeIndices, out Vector<float> maximumExpansion,
-            out RigidPoses poses, out BodyVelocities velocities);
-        /// <summary>
-        /// Scatters the calculated bounds into the target memory locations.
-        /// </summary>
-        void ScatterBounds(ref Vector3Wide min, ref Vector3Wide max, int startIndex, int count);
-    }
-
-    public struct BodyBundleSource : ICollidableBundleSource
-    {
-        public Bodies Bodies;
-        public BroadPhase BroadPhase;
-        public QuickList<int, Buffer<int>> BodyIndices;
-        public int Count
-        {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get { return BodyIndices.Count; }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void GatherCollidableBundle(int collidablesStartIndex, int count, out Vector<int> shapeIndices, out Vector<float> maximumExpansion, out RigidPoses poses, out BodyVelocities velocities)
-        {
-            Bodies.GatherDataForBounds(ref BodyIndices[collidablesStartIndex], count, out poses, out velocities, out shapeIndices, out maximumExpansion);
-        }
-
-        //TODO: There's a compiler bug if this is inlined (wrong values are written; presumably caused by the same compiler bug affecting the Bodies.GatherInertiaAndPose. 
-        //Revisit once newer compiler versions become available.
-        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe void ScatterBounds(ref Vector3Wide min, ref Vector3Wide max, int startIndex, int count)
-        {
-            ref var minBase = ref Unsafe.As<Vector<float>, float>(ref min.X);
-            ref var maxBase = ref Unsafe.As<Vector<float>, float>(ref max.X);
-            for (int i = 0; i < count; ++i)
-            {
-                //Note that we're hardcoding a relationship between the broadphase implementation and AABB calculation. This increases coupling and makes it harder to swap
-                //broadphases, but in practice, I don't think a single person besides me ever created a broad phase for v1, and there was only ever a single broad phase implementation 
-                //that was worth using at any given time. Abstraction for the sake of abstraction at the cost of virtual calls everywhere isn't worth it.
-                BroadPhase.GetActiveBoundsPointers(Bodies.ActiveSet.Collidables[BodyIndices[startIndex + i]].BroadPhaseIndex, out var minPointer, out var maxPointer);
-                //TODO: Check codegen.
-                *minPointer = new Vector3(
-                    Unsafe.Add(ref minBase, i),
-                    Unsafe.Add(ref minBase, i + Vector<float>.Count),
-                    Unsafe.Add(ref minBase, i + Vector<float>.Count * 2));
-                *maxPointer = new Vector3(
-                    Unsafe.Add(ref maxBase, i),
-                    Unsafe.Add(ref maxBase, i + Vector<float>.Count),
-                    Unsafe.Add(ref maxBase, i + Vector<float>.Count * 2));
-            }
-        }
-    }
-
     public abstract class ShapeBatch
     {
         protected RawBuffer shapesData;
@@ -88,7 +19,15 @@ namespace BepuPhysics.Collidables
         public int Capacity { get { return shapesData.Length / shapeDataSize; } }
         protected BufferPool pool;
         protected IdPool<Buffer<int>> idPool;
-        public abstract void ComputeBounds<TBundleSource>(ref TBundleSource source, float dt) where TBundleSource : ICollidableBundleSource;
+        /// <summary>
+        /// Gets the type id of the shape type in this batch.
+        /// </summary>
+        public int TypeId { get; protected set; }
+        /// <summary>
+        /// Gets whether this shape batch's contained type potentially contains children of different types.
+        /// </summary>
+        public bool Compound { get; protected set; }
+
         [Conditional("DEBUG")]
         protected abstract void ValidateRemoval(int index);
 
@@ -98,7 +37,9 @@ namespace BepuPhysics.Collidables
             idPool.Return(index, pool.SpecializeFor<int>());
         }
 
+        public abstract void ComputeBounds(ref BoundingBoxBatcher batcher);
         public abstract void ComputeBounds(int shapeIndex, ref RigidPose pose, out Vector3 min, out Vector3 max);
+        public abstract bool RayTest(int shapeIndex, ref RigidPose pose, ref Vector3 origin, ref Vector3 direction, out float t, out Vector3 normal);
 
         /// <summary>
         /// Gets a raw untyped pointer to a shape's data.
@@ -147,9 +88,8 @@ namespace BepuPhysics.Collidables
 
     }
 
-    public class ShapeBatch<TShape> : ShapeBatch where TShape : struct, IShape//TODO: When blittable is supported, shapes should be made blittable. We store them in buffers.
+    public abstract class ShapeBatch<TShape> : ShapeBatch where TShape : struct, IShape//TODO: When blittable is supported, shapes should be made blittable. We store them in buffers.
     {
-
         internal Buffer<TShape> shapes;
 
         /// <summary>
@@ -159,9 +99,10 @@ namespace BepuPhysics.Collidables
         /// <returns>Reference to the shape at the given index.</returns>
         public ref TShape this[int shapeIndex] { get { return ref shapes[shapeIndex]; } }
 
-        public ShapeBatch(BufferPool pool, int initialShapeCount)
+        protected ShapeBatch(BufferPool pool, int initialShapeCount)
         {
             this.pool = pool;
+            TypeId = default(TShape).TypeId;
             InternalResize(initialShapeCount, 0);
             IdPool<Buffer<int>>.Create(pool.SpecializeFor<int>(), initialShapeCount, out idPool);
         }
@@ -190,32 +131,6 @@ namespace BepuPhysics.Collidables
             return shapeIndex;
         }
 
-        public override void ComputeBounds<TBundleSource>(ref TBundleSource source, float dt)
-        {
-            for (int i = 0; i < source.Count; i += Vector<float>.Count)
-            {
-                int count = source.Count - i;
-                if (count > Vector<float>.Count)
-                    count = Vector<float>.Count;
-                source.GatherCollidableBundle(i, count, out var shapeIndices, out var maximumExpansions, out var poses, out var velocities);
-
-                //Note that this outputs a bundle, which we turn around and immediately use. Considering only this function in isolation, they could be combined.
-                //However, in the narrow phase, it's useful to be able to gather shapes, and you don't want to do bounds computation at the same time.
-                default(TShape).GetBounds(ref shapes, ref shapeIndices, count, ref poses.Orientation, out var maximumRadius, out var maximumAngularExpansion, out var min, out var max);
-                Vector3Wide.Add(ref min, ref poses.Position, out min);
-                Vector3Wide.Add(ref max, ref poses.Position, out max);
-                BoundingBoxUpdater.ExpandBoundingBoxes(ref min, ref max, ref velocities, dt, ref maximumRadius, ref maximumAngularExpansion, ref maximumExpansions);
-                source.ScatterBounds(ref min, ref max, i, count);
-            }
-        }
-
-        public override void ComputeBounds(int shapeIndex, ref RigidPose pose, out Vector3 min, out Vector3 max)
-        {
-            shapes[shapeIndex].GetBounds(ref pose.Orientation, out min, out max);
-            min += pose.Position;
-            max += pose.Position;
-        }
-
 
         void InternalResize(int shapeCount, int oldCopyLength)
         {
@@ -225,7 +140,7 @@ namespace BepuPhysics.Collidables
             var newShapes = newShapesData.As<TShape>();
 #if DEBUG
             //In debug mode, unused slots are kept at the default value. This helps catch misuse.
-            if(newShapes.Length > shapes.Length)
+            if (newShapes.Length > shapes.Length)
                 newShapes.Clear(shapes.Length, newShapes.Length - shapes.Length);
 #endif
             if (shapesData.Allocated)
@@ -271,6 +186,61 @@ namespace BepuPhysics.Collidables
             idPool.Dispose(pool.SpecializeFor<int>());
         }
     }
+
+
+    public class ConvexShapeBatch<TShape, TShapeWide> : ShapeBatch<TShape>
+        where TShape : struct, IConvexShape
+        where TShapeWide : struct, IShapeWide<TShape>
+    {
+        public ConvexShapeBatch(BufferPool pool, int initialShapeCount) : base(pool, initialShapeCount)
+        {
+        }
+
+        public override void ComputeBounds(ref BoundingBoxBatcher batcher)
+        {
+            batcher.ExecuteConvexBatch(this);
+        }
+
+        public override void ComputeBounds(int shapeIndex, ref RigidPose pose, out Vector3 min, out Vector3 max)
+        {
+            shapes[shapeIndex].GetBounds(ref pose.Orientation, out min, out max);
+            min += pose.Position;
+            max += pose.Position;
+        }
+        public override bool RayTest(int shapeIndex, ref RigidPose pose, ref Vector3 origin, ref Vector3 direction, out float t, out Vector3 normal)
+        {
+            return shapes[shapeIndex].RayTest(ref pose, ref origin, ref direction, out t, out normal);
+        }
+    }
+
+    public class CompoundShapeBatch<TShape> : ShapeBatch<TShape> where TShape : struct, ICompoundShape
+    {
+        Shapes shapeBatches;
+
+        public CompoundShapeBatch(BufferPool pool, int initialShapeCount, Shapes shapeBatches) : base(pool, initialShapeCount)
+        {
+            this.shapeBatches = shapeBatches;
+            Compound = true;
+        }
+
+        public override void ComputeBounds(ref BoundingBoxBatcher batcher)
+        {
+            batcher.ExecuteCompoundBatch(this);
+        }
+
+        public override void ComputeBounds(int shapeIndex, ref RigidPose pose, out Vector3 min, out Vector3 max)
+        {
+            shapes[shapeIndex].GetBounds(ref pose.Orientation, shapeBatches, out min, out max);
+            min += pose.Position;
+            max += pose.Position;
+        }
+        public override bool RayTest(int shapeIndex, ref RigidPose pose, ref Vector3 origin, ref Vector3 direction, out float t, out Vector3 normal)
+        {
+            return shapes[shapeIndex].RayTest(ref pose, ref origin, ref direction, shapeBatches, out t, out normal);
+        }
+    }
+
+
     public class Shapes
     {
         QuickList<ShapeBatch, Array<ShapeBatch>> batches;
@@ -283,6 +253,7 @@ namespace BepuPhysics.Collidables
         public int InitialCapacityPerTypeBatch { get; set; }
         public ShapeBatch this[int typeIndex] => batches[typeIndex];
         BufferPool pool;
+
 
         public Shapes(BufferPool pool, int initialCapacityPerTypeBatch)
         {
@@ -312,6 +283,7 @@ namespace BepuPhysics.Collidables
             return ref Unsafe.As<ShapeBatch, ShapeBatch<TShape>>(ref batches[typeId])[shapeIndex];
         }
 
+
         public TypedIndex Add<TShape>(ref TShape shape) where TShape : struct, IShape
         {
             var typeId = default(TShape).TypeId;
@@ -325,13 +297,16 @@ namespace BepuPhysics.Collidables
             }
             if (batches[typeId] == null)
             {
-                batches[typeId] = new ShapeBatch<TShape>(pool, InitialCapacityPerTypeBatch);
+                batches[typeId] = default(TShape).CreateShapeBatch(pool, InitialCapacityPerTypeBatch, this);
             }
+
             Debug.Assert(batches[typeId] is ShapeBatch<TShape>);
             var batch = Unsafe.As<ShapeBatch, ShapeBatch<TShape>>(ref batches[typeId]);
             var index = batch.Add(ref shape);
             return new TypedIndex(typeId, index);
         }
+
+
 
         public void Remove(TypedIndex shapeIndex)
         {

@@ -1,10 +1,10 @@
 ﻿using BepuPhysics.Collidables;
+using BepuUtilities;
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Text;
+using static BepuUtilities.GatherScatter;
 
 namespace BepuPhysics.CollisionDetection.CollisionTasks
 {
@@ -17,6 +17,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
         void GetPoseOffset(out Vector3Wide offsetB);
         //Note the pair parameter. This is just to get around the fact that you cannot ref return struct fields like you can with classes, at least right now
         ref Vector<int> GetFlipMask(ref TPairWide pair);
+        ref Vector<float> GetSpeculativeMargin(ref TPairWide pair);
         ref TShapeWideA GetShapeA(ref TPairWide pair);
         ref TShapeWideB GetShapeB(ref TPairWide pair);
         ref QuaternionWide GetOrientationA(ref TPairWide pair);
@@ -31,8 +32,8 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
     {
         public TShapeWideA A;
         public TShapeWideB B;
+        public Vector<float> SpeculativeMargin;
         public Vector<int> FlipMask;
-        //TODO: This will be affected by any alternate pose representation.
         public Vector3Wide PositionA;
         public QuaternionWide OrientationA;
         public Vector3Wide PositionB;
@@ -54,6 +55,11 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
         public ref Vector<int> GetFlipMask(ref TestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> pair)
         {
             return ref pair.FlipMask;
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ref Vector<float> GetSpeculativeMargin(ref TestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> pair)
+        {
+            return ref pair.SpeculativeMargin;
         }
         //Little unfortunate that we can't return ref of struct instances.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -88,21 +94,22 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
             A.Gather(ref source.A);
             B.Gather(ref source.B);
             ref var shared = ref source.Shared;
-            Unsafe.As<Vector<int>, int>(ref FlipMask) = shared.FlipMask;
-            Unsafe.As<Vector<float>, float>(ref PositionA.X) = shared.PoseA.Position.X;
-            Unsafe.As<Vector<float>, float>(ref PositionA.Y) = shared.PoseA.Position.Y;
-            Unsafe.As<Vector<float>, float>(ref PositionA.Z) = shared.PoseA.Position.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationA.X) = shared.PoseA.Orientation.X;
-            Unsafe.As<Vector<float>, float>(ref OrientationA.Y) = shared.PoseA.Orientation.Y;
-            Unsafe.As<Vector<float>, float>(ref OrientationA.Z) = shared.PoseA.Orientation.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationA.W) = shared.PoseA.Orientation.W;
-            Unsafe.As<Vector<float>, float>(ref PositionB.X) = shared.PoseB.Position.X;
-            Unsafe.As<Vector<float>, float>(ref PositionB.Y) = shared.PoseB.Position.Y;
-            Unsafe.As<Vector<float>, float>(ref PositionB.Z) = shared.PoseB.Position.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.X) = shared.PoseB.Orientation.X;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.Y) = shared.PoseB.Orientation.Y;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.Z) = shared.PoseB.Orientation.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.W) = shared.PoseB.Orientation.W;
+            GetFirst(ref FlipMask) = shared.FlipMask;
+            GetFirst(ref PositionA.X) = shared.PoseA.Position.X;
+            GetFirst(ref PositionA.Y) = shared.PoseA.Position.Y;
+            GetFirst(ref PositionA.Z) = shared.PoseA.Position.Z;
+            GetFirst(ref OrientationA.X) = shared.PoseA.Orientation.X;
+            GetFirst(ref OrientationA.Y) = shared.PoseA.Orientation.Y;
+            GetFirst(ref OrientationA.Z) = shared.PoseA.Orientation.Z;
+            GetFirst(ref OrientationA.W) = shared.PoseA.Orientation.W;
+            GetFirst(ref PositionB.X) = shared.PoseB.Position.X;
+            GetFirst(ref PositionB.Y) = shared.PoseB.Position.Y;
+            GetFirst(ref PositionB.Z) = shared.PoseB.Position.Z;
+            GetFirst(ref OrientationB.X) = shared.PoseB.Orientation.X;
+            GetFirst(ref OrientationB.Y) = shared.PoseB.Orientation.Y;
+            GetFirst(ref OrientationB.Z) = shared.PoseB.Orientation.Z;
+            GetFirst(ref OrientationB.W) = shared.PoseB.Orientation.W;
+            GetFirst(ref SpeculativeMargin) = shared.SpeculativeMargin;
         }
     }
     public struct UnflippableTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> : ITestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB, UnflippableTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB>>
@@ -111,7 +118,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
     {
         public TShapeWideA A;
         public TShapeWideB B;
-        //TODO: This will be affected by any alternate pose representation.
+        public Vector<float> SpeculativeMargin;
         public Vector3Wide PositionA;
         public QuaternionWide OrientationA;
         public Vector3Wide PositionB;
@@ -132,6 +139,11 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
         public ref Vector<int> GetFlipMask(ref UnflippableTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> pair)
         {
             throw new NotImplementedException();
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ref Vector<float> GetSpeculativeMargin(ref UnflippableTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> pair)
+        {
+            return ref pair.SpeculativeMargin;
         }
         //Little unfortunate that we can't return ref of struct instances.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -166,20 +178,21 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
             A.Gather(ref source.A);
             B.Gather(ref source.B);
             ref var shared = ref source.Shared;
-            Unsafe.As<Vector<float>, float>(ref PositionA.X) = shared.PoseA.Position.X;
-            Unsafe.As<Vector<float>, float>(ref PositionA.Y) = shared.PoseA.Position.Y;
-            Unsafe.As<Vector<float>, float>(ref PositionA.Z) = shared.PoseA.Position.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationA.X) = shared.PoseA.Orientation.X;
-            Unsafe.As<Vector<float>, float>(ref OrientationA.Y) = shared.PoseA.Orientation.Y;
-            Unsafe.As<Vector<float>, float>(ref OrientationA.Z) = shared.PoseA.Orientation.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationA.W) = shared.PoseA.Orientation.W;
-            Unsafe.As<Vector<float>, float>(ref PositionB.X) = shared.PoseB.Position.X;
-            Unsafe.As<Vector<float>, float>(ref PositionB.Y) = shared.PoseB.Position.Y;
-            Unsafe.As<Vector<float>, float>(ref PositionB.Z) = shared.PoseB.Position.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.X) = shared.PoseB.Orientation.X;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.Y) = shared.PoseB.Orientation.Y;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.Z) = shared.PoseB.Orientation.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.W) = shared.PoseB.Orientation.W;
+            GetFirst(ref PositionA.X) = shared.PoseA.Position.X;
+            GetFirst(ref PositionA.Y) = shared.PoseA.Position.Y;
+            GetFirst(ref PositionA.Z) = shared.PoseA.Position.Z;
+            GetFirst(ref OrientationA.X) = shared.PoseA.Orientation.X;
+            GetFirst(ref OrientationA.Y) = shared.PoseA.Orientation.Y;
+            GetFirst(ref OrientationA.Z) = shared.PoseA.Orientation.Z;
+            GetFirst(ref OrientationA.W) = shared.PoseA.Orientation.W;
+            GetFirst(ref PositionB.X) = shared.PoseB.Position.X;
+            GetFirst(ref PositionB.Y) = shared.PoseB.Position.Y;
+            GetFirst(ref PositionB.Z) = shared.PoseB.Position.Z;
+            GetFirst(ref OrientationB.X) = shared.PoseB.Orientation.X;
+            GetFirst(ref OrientationB.Y) = shared.PoseB.Orientation.Y;
+            GetFirst(ref OrientationB.Z) = shared.PoseB.Orientation.Z;
+            GetFirst(ref OrientationB.W) = shared.PoseB.Orientation.W;
+            GetFirst(ref SpeculativeMargin) = shared.SpeculativeMargin;
         }
     }
     public struct OneOrientationTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> : ITestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB, OneOrientationTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB>>
@@ -189,7 +202,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
         public TShapeWideA A;
         public TShapeWideB B;
         public Vector<int> FlipMask;
-        //TODO: This will be affected by any alternate pose representation.
+        public Vector<float> SpeculativeMargin;
         public Vector3Wide PositionA;
         public Vector3Wide PositionB;
         public QuaternionWide OrientationB;
@@ -211,6 +224,11 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
         public ref Vector<int> GetFlipMask(ref OneOrientationTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> pair)
         {
             return ref pair.FlipMask;
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ref Vector<float> GetSpeculativeMargin(ref OneOrientationTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> pair)
+        {
+            return ref pair.SpeculativeMargin;
         }
         //Little unfortunate that we can't return ref of struct instances.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -244,17 +262,18 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
             A.Gather(ref source.A);
             B.Gather(ref source.B);
             ref var shared = ref source.Shared;
-            Unsafe.As<Vector<int>, int>(ref FlipMask) = shared.FlipMask;
-            Unsafe.As<Vector<float>, float>(ref PositionA.X) = shared.PoseA.Position.X;
-            Unsafe.As<Vector<float>, float>(ref PositionA.Y) = shared.PoseA.Position.Y;
-            Unsafe.As<Vector<float>, float>(ref PositionA.Z) = shared.PoseA.Position.Z;
-            Unsafe.As<Vector<float>, float>(ref PositionB.X) = shared.PoseB.Position.X;
-            Unsafe.As<Vector<float>, float>(ref PositionB.Y) = shared.PoseB.Position.Y;
-            Unsafe.As<Vector<float>, float>(ref PositionB.Z) = shared.PoseB.Position.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.X) = shared.PoseB.Orientation.X;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.Y) = shared.PoseB.Orientation.Y;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.Z) = shared.PoseB.Orientation.Z;
-            Unsafe.As<Vector<float>, float>(ref OrientationB.W) = shared.PoseB.Orientation.W;
+            GetFirst(ref FlipMask) = shared.FlipMask;
+            GetFirst(ref PositionA.X) = shared.PoseA.Position.X;
+            GetFirst(ref PositionA.Y) = shared.PoseA.Position.Y;
+            GetFirst(ref PositionA.Z) = shared.PoseA.Position.Z;
+            GetFirst(ref PositionB.X) = shared.PoseB.Position.X;
+            GetFirst(ref PositionB.Y) = shared.PoseB.Position.Y;
+            GetFirst(ref PositionB.Z) = shared.PoseB.Position.Z;
+            GetFirst(ref OrientationB.X) = shared.PoseB.Orientation.X;
+            GetFirst(ref OrientationB.Y) = shared.PoseB.Orientation.Y;
+            GetFirst(ref OrientationB.Z) = shared.PoseB.Orientation.Z;
+            GetFirst(ref OrientationB.W) = shared.PoseB.Orientation.W;
+            GetFirst(ref SpeculativeMargin) = shared.SpeculativeMargin;
         }
     }
     public struct NoOrientationTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> :
@@ -264,7 +283,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
     {
         public TShapeWideA A;
         public TShapeWideB B;
-        //TODO: This will be affected by any alternate pose representation.
+        public Vector<float> SpeculativeMargin;
         public Vector3Wide PositionA;
         public Vector3Wide PositionB;
 
@@ -282,6 +301,11 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
         public ref Vector<int> GetFlipMask(ref NoOrientationTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> pair)
         {
             throw new NotImplementedException();
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ref Vector<float> GetSpeculativeMargin(ref NoOrientationTestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB> pair)
+        {
+            return ref pair.SpeculativeMargin;
         }
         //Little unfortunate that we can't return ref of struct instances.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -314,12 +338,13 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
             A.Gather(ref source.A);
             B.Gather(ref source.B);
             ref var shared = ref source.Shared;
-            Unsafe.As<Vector<float>, float>(ref PositionA.X) = shared.PoseA.Position.X;
-            Unsafe.As<Vector<float>, float>(ref PositionA.Y) = shared.PoseA.Position.Y;
-            Unsafe.As<Vector<float>, float>(ref PositionA.Z) = shared.PoseA.Position.Z;
-            Unsafe.As<Vector<float>, float>(ref PositionB.X) = shared.PoseB.Position.X;
-            Unsafe.As<Vector<float>, float>(ref PositionB.Y) = shared.PoseB.Position.Y;
-            Unsafe.As<Vector<float>, float>(ref PositionB.Z) = shared.PoseB.Position.Z;
+            GetFirst(ref PositionA.X) = shared.PoseA.Position.X;
+            GetFirst(ref PositionA.Y) = shared.PoseA.Position.Y;
+            GetFirst(ref PositionA.Z) = shared.PoseA.Position.Z;
+            GetFirst(ref PositionB.X) = shared.PoseB.Position.X;
+            GetFirst(ref PositionB.Y) = shared.PoseB.Position.Y;
+            GetFirst(ref PositionB.Z) = shared.PoseB.Position.Z;
+            GetFirst(ref SpeculativeMargin) = shared.SpeculativeMargin;
         }
     }
 
@@ -327,29 +352,28 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
     {
         //Note that, while the interface requires all three of these implementations, concrete implementers will only ever have one defined or called.
         //Including the other unused functions is just here to simplify its use in the batch execution loop.
-        void Test(ref TShapeWideA a, ref TShapeWideB b, ref Vector3Wide offsetB, ref QuaternionWide orientationA, ref QuaternionWide orientationB, out TManifoldWideType manifold);
-        void Test(ref TShapeWideA a, ref TShapeWideB b, ref Vector3Wide offsetB, ref QuaternionWide orientationB, out TManifoldWideType manifold);
-        void Test(ref TShapeWideA a, ref TShapeWideB b, ref Vector3Wide offsetB, out TManifoldWideType manifold);
+        void Test(ref TShapeWideA a, ref TShapeWideB b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, ref QuaternionWide orientationA, ref QuaternionWide orientationB, out TManifoldWideType manifold);
+        void Test(ref TShapeWideA a, ref TShapeWideB b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, ref QuaternionWide orientationB, out TManifoldWideType manifold);
+        void Test(ref TShapeWideA a, ref TShapeWideB b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, out TManifoldWideType manifold);
     }
 
     public interface IContactManifoldWide
     {
         void ApplyFlipMask(ref Vector3Wide offsetB, ref Vector<int> flipMask);
-        void PrepareManifoldForScatter(out ContactManifold manifold);
-        void Scatter(ref Vector3Wide offsetB, ref ContactManifold target);
+        void Scatter(ref Vector3Wide offsetB, ref ConvexContactManifold target);
     }
 
-    class CollisionTaskCommon
+    class ConvexCollisionTaskCommon
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static unsafe void ExecuteBatch<TContinuations, TFilters, TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairWide, TManifoldWide, TPairTester>
-            (ref UntypedList batch, ref StreamingBatcher batcher, ref TContinuations continuations, ref TFilters filters)
+        public static unsafe void ExecuteBatch<TCallbacks, TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairWide, TManifoldWide, TPairTester>
+            (ref UntypedList batch, ref CollisionBatcher<TCallbacks> batcher)
             where TShapeA : struct, IShape where TShapeB : struct, IShape
             where TShapeWideA : struct, IShapeWide<TShapeA> where TShapeWideB : struct, IShapeWide<TShapeB>
             where TPairWide : struct, ITestPairWide<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairWide>
             where TPairTester : struct, IPairTester<TShapeWideA, TShapeWideB, TManifoldWide>
             where TManifoldWide : IContactManifoldWide
-            where TContinuations : IContinuations
+            where TCallbacks : struct, ICollisionCallbacks
         {
             ref var start = ref Unsafe.As<byte, TestPair<TShapeA, TShapeB>>(ref batch.Buffer[0]);
             //With any luck, the compiler will eventually get rid of these unnecessary zero inits. 
@@ -357,7 +381,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
             var pairWide = default(TPairWide);
             var manifoldWide = default(TManifoldWide);
             var defaultPairTester = default(TPairTester);
-            manifoldWide.PrepareManifoldForScatter(out var manifold);
+            var manifold = default(ConvexContactManifold);
 
             for (int i = 0; i < batch.Count; i += Vector<float>.Count)
             {
@@ -381,6 +405,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
                     defaultPairTester.Test(
                         ref pairWide.GetShapeA(ref pairWide),
                         ref pairWide.GetShapeB(ref pairWide),
+                        ref pairWide.GetSpeculativeMargin(ref pairWide),
                         ref offsetB,
                         ref pairWide.GetOrientationA(ref pairWide),
                         ref pairWide.GetOrientationB(ref pairWide),
@@ -394,6 +419,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
                     defaultPairTester.Test(
                         ref pairWide.GetShapeA(ref pairWide),
                         ref pairWide.GetShapeB(ref pairWide),
+                        ref pairWide.GetSpeculativeMargin(ref pairWide),
                         ref offsetB,
                         ref pairWide.GetOrientationB(ref pairWide),
                         out manifoldWide);
@@ -406,6 +432,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
                     defaultPairTester.Test(
                         ref pairWide.GetShapeA(ref pairWide),
                         ref pairWide.GetShapeB(ref pairWide),
+                        ref pairWide.GetSpeculativeMargin(ref pairWide),
                         ref offsetB,
                         out manifoldWide);
                 }
@@ -424,11 +451,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
                     ref var offsetAsFloat = ref Unsafe.Add(ref Unsafe.As<Vector3Wide, float>(ref offsetB), j);
                     ref var offsetSource = ref Unsafe.As<float, Vector3Wide>(ref offsetAsFloat);
                     manifoldSource.Scatter(ref offsetSource, ref manifold);
-                    continuations.Notify(Unsafe.Add(ref bundleStart, j).Shared.Continuation, &manifold);
-                    if (typeof(TManifoldWide) == typeof(Convex1ContactManifoldWide))
-                    {
-                        Debug.Assert(manifold.ContactCount == 1 && manifold.Convex, "The notify function should not modify the provided manifold reference.");
-                    }
+                    batcher.ProcessConvexResult(&manifold, ref Unsafe.Add(ref bundleStart, j).Shared.Continuation);
                 }
             }
 

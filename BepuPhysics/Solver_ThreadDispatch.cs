@@ -59,7 +59,7 @@ namespace BepuPhysics
 
         //A couple of notes:
         //1) We explicitly don't care about maintaining worker-data relationships between frames. The cache will likely be trashed by the rest of the program- even other parts
-        //of the physics simulation will evict stuff. We're primarily concerned about scheduling within 
+        //of the physics simulation will evict stuff. We're primarily concerned about scheduling within the solver.
         //2) Note that neither the prestep nor the warmstart are used to modify the work distribution for the solve- neither of those stages is proportional to the solve iteration load.
 
         //3) Core-data stickiness doesn't really offer much value for L1/L2 caches. It doesn't take much to evict the entirety of the old data- a 3770K only holds 256KB in its L2.

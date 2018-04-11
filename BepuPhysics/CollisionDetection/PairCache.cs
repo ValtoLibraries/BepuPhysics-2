@@ -341,34 +341,6 @@ namespace BepuPhysics.CollisionDetection
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal unsafe void FillNewConstraintCache<TConstraintCache>(int* featureIds, ref TConstraintCache cache)
-        {
-            //1 contact constraint caches do not store a feature id; it's pointless.
-            if (typeof(TConstraintCache) == typeof(ConstraintCache2))
-            {
-                ref var typedCache = ref Unsafe.As<TConstraintCache, ConstraintCache2>(ref cache);
-                typedCache.FeatureId0 = featureIds[0];
-                typedCache.FeatureId1 = featureIds[1];
-            }
-            else if (typeof(TConstraintCache) == typeof(ConstraintCache3))
-            {
-                ref var typedCache = ref Unsafe.As<TConstraintCache, ConstraintCache3>(ref cache);
-                typedCache.FeatureId0 = featureIds[0];
-                typedCache.FeatureId1 = featureIds[1];
-                typedCache.FeatureId2 = featureIds[2];
-            }
-            else if (typeof(TConstraintCache) == typeof(ConstraintCache4))
-            {
-                ref var typedCache = ref Unsafe.As<TConstraintCache, ConstraintCache4>(ref cache);
-                typedCache.FeatureId0 = featureIds[0];
-                typedCache.FeatureId1 = featureIds[1];
-                typedCache.FeatureId2 = featureIds[2];
-                typedCache.FeatureId3 = featureIds[3];
-            }
-            //TODO: In the event that higher contact count manifolds exist for the purposes of nonconvexes, this will need to be expanded.
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal unsafe PairCacheIndex Add<TConstraintCache, TCollisionCache>(int workerIndex, ref CollidablePair pair,
             ref TCollisionCache collisionCache, ref TConstraintCache constraintCache)
             where TConstraintCache : IPairCacheEntry
@@ -389,13 +361,6 @@ namespace BepuPhysics.CollisionDetection
             NextWorkerCaches[workerIndex].Update(ref pointers, ref collisionCache, ref constraintCache);
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal int GetContactCount(int constraintType)
-        {
-            //TODO: Very likely that we'll expand the nonconvex manifold maximum to 8 contacts, so this will need to be adjusted later.
-            return 1 + (constraintType & 0x3);
-        }
-
         /// <summary>
         /// Gets whether a constraint type id maps to a contact constraint.
         /// </summary>
@@ -404,12 +369,11 @@ namespace BepuPhysics.CollisionDetection
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool IsContactBatch(int constraintTypeId)
         {
-            //TODO: If the nonconvex contact count expands to 8, this will have to change.
-            return constraintTypeId < 16;
+            return constraintTypeId < CollisionConstraintTypeCount;
         }
-        
-        //TODO: If we add in nonconvex manifolds with up to 8 contacts, this will need to change- we preallocate enough space to hold all possible narrowphase generated types.
-        public const int CollisionConstraintTypeCount = 16;
+
+        //4 convex one body, 4 convex two body, 7 nonconvex one body, 7 convex two body.
+        public const int CollisionConstraintTypeCount = 22;
         public const int CollisionTypeCount = 16;
 
 
@@ -445,6 +409,7 @@ namespace BepuPhysics.CollisionDetection
             //Note that this assumes that the constraint handle is stored in the first 4 bytes of the constraint cache.
             *(int*)NextWorkerCaches[constraintCacheIndex.Cache].GetConstraintCachePointer(constraintCacheIndex) = constraintHandle;
             solver.GetConstraintReference(constraintHandle, out var reference);
+            Debug.Assert(reference.IndexInTypeBatch >= 0 && reference.IndexInTypeBatch < reference.TypeBatch.ConstraintCount);
             narrowPhase.contactConstraintAccessors[constraintCacheIndex.Type].ScatterNewImpulses(ref reference, ref impulses);
             //This mapping entry had to be deferred until now because no constraint handle was known until now. Now that we have it,
             //we can fill in the pointers back to the overlap mapping.

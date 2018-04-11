@@ -5,12 +5,14 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Quaternion = BepuUtilities.Quaternion;
-using static BepuPhysics.GatherScatter;
+using static BepuUtilities.GatherScatter;
+using BepuUtilities;
+
 namespace BepuPhysics.Constraints.Contact
 {
-    public struct Contact1 : IConstraintDescription<Contact1>
+    public struct Contact1 : IConvexTwoBodyContactConstraintDescription<Contact1>
     {
-        public ManifoldContactData Contact0;
+        public ConstraintContactData Contact0;
         public Vector3 OffsetB;
         public float FrictionCoefficient;
         public Vector3 Normal;
@@ -36,8 +38,8 @@ namespace BepuPhysics.Constraints.Contact
             GetFirst(ref target.Normal.Y) = Normal.Y;
             GetFirst(ref target.Normal.Z) = Normal.Z;
 
-            GetFirst(ref target.SpringSettings.NaturalFrequency) = SpringSettings.NaturalFrequency;
-            GetFirst(ref target.SpringSettings.DampingRatio) = SpringSettings.DampingRatio;
+            GetFirst(ref target.SpringSettings.AngularFrequency) = SpringSettings.AngularFrequency;
+            GetFirst(ref target.SpringSettings.TwiceDampingRatio) = SpringSettings.TwiceDampingRatio;
             GetFirst(ref target.MaximumRecoveryVelocity) = MaximumRecoveryVelocity;
 
             GetFirst(ref target.PenetrationDepth0) = Contact0.PenetrationDepth;
@@ -62,12 +64,22 @@ namespace BepuPhysics.Constraints.Contact
             description.Normal.Y = GetFirst(ref source.Normal.Y);
             description.Normal.Z = GetFirst(ref source.Normal.Z);
 
-            description.SpringSettings.NaturalFrequency = GetFirst(ref source.SpringSettings.NaturalFrequency);
-            description.SpringSettings.DampingRatio = GetFirst(ref source.SpringSettings.DampingRatio);
+            description.SpringSettings.AngularFrequency = GetFirst(ref source.SpringSettings.AngularFrequency);
+            description.SpringSettings.TwiceDampingRatio = GetFirst(ref source.SpringSettings.TwiceDampingRatio);
             description.MaximumRecoveryVelocity = GetFirst(ref source.MaximumRecoveryVelocity);
 
             description.Contact0.PenetrationDepth = GetFirst(ref source.PenetrationDepth0);
 
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void CopyManifoldWideProperties(ref Vector3 offsetB, ref Vector3 normal, ref PairMaterialProperties material)
+        {
+            OffsetB = offsetB;
+            FrictionCoefficient = material.FrictionCoefficient;
+            Normal = normal;
+            SpringSettings = material.SpringSettings;
+            MaximumRecoveryVelocity = material.MaximumRecoveryVelocity;
         }
 
         public int ConstraintTypeId
@@ -127,7 +139,7 @@ namespace BepuPhysics.Constraints.Contact
             projection.Normal = prestep.Normal;
             Helpers.BuildOrthnormalBasis(ref prestep.Normal, out var x, out var z);
             TangentFriction.Prestep(ref x, ref z, ref prestep.OffsetA0, ref offsetToManifoldCenterB, ref projection.InertiaA, ref projection.InertiaB, out projection.Tangent);
-            PenetrationLimit1.Prestep(ref projection.InertiaA, ref projection.InertiaB, ref prestep.Normal, ref prestep, dt, inverseDt, out projection.Penetration);
+            PenetrationLimit1.Prestep(ref projection.InertiaA, ref projection.InertiaB, ref prestep, dt, inverseDt, out projection.Penetration);
             //Single contact manifolds have no true surface area, so approximate twist friction lever arm using the penetration depth. 
             projection.PremultipliedTwistFrictionCoefficient = Vector.Max(Vector<float>.Zero, prestep.FrictionCoefficient * prestep.PenetrationDepth0);
             TwistFriction.Prestep(ref projection.InertiaA, ref projection.InertiaB, ref prestep.Normal, out projection.Twist);
@@ -167,6 +179,6 @@ namespace BepuPhysics.Constraints.Contact
     public class Contact1TypeProcessor :
         TwoBodyTypeProcessor<Contact1PrestepData, Contact1Projection, Contact1AccumulatedImpulses, ContactManifold1Functions>
     {
-        public const int BatchTypeId = 8;
+        public const int BatchTypeId = 4;
     }
 }

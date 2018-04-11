@@ -5,14 +5,16 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Quaternion = BepuUtilities.Quaternion;
-using static BepuPhysics.GatherScatter;
+using static BepuUtilities.GatherScatter;
+using BepuUtilities;
+
 namespace BepuPhysics.Constraints.Contact
 {
-    public struct Contact1OneBody : IConstraintDescription<Contact1OneBody>
+    public struct Contact1OneBody : IConvexOneBodyContactConstraintDescription<Contact1OneBody>
     {
-        public ManifoldContactData Contact0;
-        public float FrictionCoefficient;
+        public ConstraintContactData Contact0;
         public Vector3 Normal;
+        public float FrictionCoefficient;
         public SpringSettings SpringSettings;
         public float MaximumRecoveryVelocity;
 
@@ -31,8 +33,8 @@ namespace BepuPhysics.Constraints.Contact
             GetFirst(ref target.Normal.Y) = Normal.Y;
             GetFirst(ref target.Normal.Z) = Normal.Z;
 
-            GetFirst(ref target.SpringSettings.NaturalFrequency) = SpringSettings.NaturalFrequency;
-            GetFirst(ref target.SpringSettings.DampingRatio) = SpringSettings.DampingRatio;
+            GetFirst(ref target.SpringSettings.AngularFrequency) = SpringSettings.AngularFrequency;
+            GetFirst(ref target.SpringSettings.TwiceDampingRatio) = SpringSettings.TwiceDampingRatio;
             GetFirst(ref target.MaximumRecoveryVelocity) = MaximumRecoveryVelocity;
 
             GetFirst(ref target.PenetrationDepth0) = Contact0.PenetrationDepth;
@@ -53,12 +55,21 @@ namespace BepuPhysics.Constraints.Contact
             description.Normal.Y = GetFirst(ref source.Normal.Y);
             description.Normal.Z = GetFirst(ref source.Normal.Z);
 
-            description.SpringSettings.NaturalFrequency = GetFirst(ref source.SpringSettings.NaturalFrequency);
-            description.SpringSettings.DampingRatio = GetFirst(ref source.SpringSettings.DampingRatio);
+            description.SpringSettings.AngularFrequency = GetFirst(ref source.SpringSettings.AngularFrequency);
+            description.SpringSettings.TwiceDampingRatio = GetFirst(ref source.SpringSettings.TwiceDampingRatio);
             description.MaximumRecoveryVelocity = GetFirst(ref source.MaximumRecoveryVelocity);
 
             description.Contact0.PenetrationDepth = GetFirst(ref source.PenetrationDepth0);
 
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void CopyManifoldWideProperties(ref Vector3 normal, ref PairMaterialProperties material)
+        {
+            FrictionCoefficient = material.FrictionCoefficient;
+            Normal = normal;
+            SpringSettings = material.SpringSettings;
+            MaximumRecoveryVelocity = material.MaximumRecoveryVelocity;
         }
 
         public int ConstraintTypeId
@@ -108,7 +119,7 @@ namespace BepuPhysics.Constraints.Contact
             projection.Normal = prestep.Normal;
             Helpers.BuildOrthnormalBasis(ref prestep.Normal, out var x, out var z);
             TangentFrictionOneBody.Prestep(ref x, ref z, ref prestep.OffsetA0, ref projection.InertiaA, out projection.Tangent);
-            PenetrationLimit1OneBody.Prestep(ref projection.InertiaA, ref prestep.Normal, ref prestep, dt, inverseDt, out projection.Penetration);
+            PenetrationLimit1OneBody.Prestep(ref projection.InertiaA, ref prestep, dt, inverseDt, out projection.Penetration);
             //Single contact manifolds have no true surface area, so approximate twist friction lever arm using the penetration depth. 
             projection.PremultipliedTwistFrictionCoefficient = Vector.Max(Vector<float>.Zero, prestep.FrictionCoefficient * prestep.PenetrationDepth0);
             TwistFrictionOneBody.Prestep(ref projection.InertiaA, ref prestep.Normal, out projection.Twist);

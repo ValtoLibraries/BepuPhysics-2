@@ -5,49 +5,17 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using BepuUtilities.Memory;
 using System.Diagnostics;
+using BepuUtilities;
 
 namespace BepuPhysics.Collidables
 {
-    public struct Sphere : IShape
+    public struct Sphere : IConvexShape
     {
         public float Radius;
 
         public Sphere(float radius)
         {
             Radius = radius;
-        }
-
-        //Note that spheres are sufficiently simple that no explicit bundle is required. A single vector<float> suffices.
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Gather(ref Buffer<Sphere> shapes, ref Vector<int> shapeIndices, int count, out Vector<float> radii)
-        {
-            ref var radiiBase = ref Unsafe.As<Vector<float>, float>(ref radii);
-            ref var shapeIndicesBase = ref Unsafe.As<Vector<int>, int>(ref shapeIndices);
-            Debug.Assert(count <= Vector<float>.Count);
-            for (int i = 0; i < count; ++i)
-            {
-                Unsafe.Add(ref radiiBase, i) = shapes[Unsafe.Add(ref shapeIndicesBase, i)].Radius;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void GetBounds<TShape>(ref Buffer<TShape> shapes, ref Vector<int> shapeIndices, int count, ref QuaternionWide orientations,
-            out Vector<float> maximumRadius, out Vector<float> maximumAngularExpansion, out Vector3Wide min, out Vector3Wide max)
-            where TShape : struct, IShape
-        {
-            //TODO: You could directly create the min and max during a scalar gather-like operation. Spheres don't really take advantage of bundled math.
-            //Might be worth a quick try, but don't expect it to move the time more than a few microseconds.
-            Gather(ref Unsafe.As<Buffer<TShape>, Buffer<Sphere>>(ref shapes), ref shapeIndices, count, out var radii);
-
-            //Spheres have perfect symmetry, so there is no need for angular expansion.
-            maximumRadius = new Vector<float>();
-            maximumAngularExpansion = new Vector<float>();
-
-            //It's technically true that spheres (and only spheres) do not require orientation to be loaded and could be special cased to reduce memory traffic, but just heck no.
-            //It's very likely that the orientation loaded for the sphere was already in L1 anyway due to the online batching performed during the pose integrator.
-            var negatedRadii = -radii;
-            max = new Vector3Wide(ref radii);
-            min = new Vector3Wide(ref negatedRadii);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -96,14 +64,20 @@ namespace BepuPhysics.Collidables
             return true;
         }
 
-        public void ComputeLocalInverseInertia(float inverseMass, out Triangular3x3 localInverseInertia)
+        public void ComputeInertia(float mass, out BodyInertia inertia)
         {
-            localInverseInertia.M11 = inverseMass / ((2f / 5f) * Radius * Radius);
-            localInverseInertia.M21 = 0;
-            localInverseInertia.M22 = localInverseInertia.M11;
-            localInverseInertia.M31 = 0;
-            localInverseInertia.M32 = 0;
-            localInverseInertia.M33 = localInverseInertia.M11;
+            inertia.InverseMass = 1f / mass;
+            inertia.InverseInertiaTensor.XX = inertia.InverseMass / ((2f / 5f) * Radius * Radius);
+            inertia.InverseInertiaTensor.YX = 0;
+            inertia.InverseInertiaTensor.YY = inertia.InverseInertiaTensor.XX;
+            inertia.InverseInertiaTensor.ZX = 0;
+            inertia.InverseInertiaTensor.ZY = 0;
+            inertia.InverseInertiaTensor.ZZ = inertia.InverseInertiaTensor.XX;
+        }
+
+        public ShapeBatch CreateShapeBatch(BufferPool pool, int initialCapacity, Shapes shapes)
+        {
+            return new ConvexShapeBatch<Sphere, SphereWide>(pool, initialCapacity);
         }
 
         /// <summary>
@@ -120,7 +94,21 @@ namespace BepuPhysics.Collidables
         public void Gather(ref Sphere source)
         {
             Unsafe.As<Vector<float>, float>(ref Radius) = source.Radius;
-        }        
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void GetBounds(ref QuaternionWide orientations, out Vector<float> maximumRadius, out Vector<float> maximumAngularExpansion, out Vector3Wide min, out Vector3Wide max)
+        {
+            //Spheres have perfect symmetry, so there is no need for angular expansion.
+            maximumRadius = new Vector<float>();
+            maximumAngularExpansion = new Vector<float>();
+
+            //It's technically true that spheres (and only spheres) do not require orientation to be loaded and could be special cased to reduce memory traffic, but just heck no.
+            //It's very likely that the orientation loaded for the sphere was already in L1 anyway due to the online batching performed during the pose integrator.
+            var negatedRadius = -Radius;
+            max = new Vector3Wide(ref Radius);
+            min = new Vector3Wide(ref negatedRadius);
+        }
     }
 
 }

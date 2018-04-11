@@ -45,10 +45,8 @@ namespace BepuPhysics.Constraints
         public sealed override void EnumerateConnectedBodyIndices<TEnumerator>(ref TypeBatch typeBatch, int indexInTypeBatch, ref TEnumerator enumerator)
         {
             BundleIndexing.GetBundleIndices(indexInTypeBatch, out var constraintBundleIndex, out var constraintInnerIndex);
-
             ref var indexA = ref GatherScatter.Get(ref Buffer<TwoBodyReferences>.Get(ref typeBatch.BodyReferences, constraintBundleIndex).IndexA, constraintInnerIndex);
             ref var indexB = ref Unsafe.Add(ref indexA, Vector<int>.Count);
-
             //Note that the variables are ref locals! This is important for correctness, because every execution of LoopBody could result in a swap.
             //Ref locals aren't the only solution, but if you ever change this, make sure you account for the potential mutation in the enumerator.
             enumerator.LoopBody(indexA);
@@ -142,9 +140,10 @@ namespace BepuPhysics.Constraints
                 ref var accumulatedImpulses = ref Unsafe.Add(ref accumulatedImpulsesBase, i);
                 ref var bodyReferences = ref Unsafe.Add(ref bodyReferencesBase, i);
                 int count = GetCountInBundle(ref typeBatch, i);
-                GatherScatter.GatherVelocities(ref bodyVelocities, ref bodyReferences, count, out var wsvA, out var wsvB);
+                Bodies.GatherVelocities(ref bodyVelocities, ref bodyReferences, count, out var wsvA, out var wsvB);
                 function.WarmStart(ref wsvA, ref wsvB, ref projection, ref accumulatedImpulses);
-                GatherScatter.ScatterVelocities(ref bodyVelocities, ref bodyReferences, count, ref wsvA, ref wsvB);
+                Bodies.ScatterVelocities(ref wsvA, ref wsvB, ref bodyVelocities, ref bodyReferences, count);
+
             }
         }
 
@@ -160,9 +159,9 @@ namespace BepuPhysics.Constraints
                 ref var accumulatedImpulses = ref Unsafe.Add(ref accumulatedImpulsesBase, i);
                 ref var bodyReferences = ref Unsafe.Add(ref bodyReferencesBase, i);
                 int count = GetCountInBundle(ref typeBatch, i);
-                GatherScatter.GatherVelocities(ref bodyVelocities, ref bodyReferences, count, out var wsvA, out var wsvB);
+                Bodies.GatherVelocities(ref bodyVelocities, ref bodyReferences, count, out var wsvA, out var wsvB);
                 function.Solve(ref wsvA, ref wsvB, ref projection, ref accumulatedImpulses);
-                GatherScatter.ScatterVelocities(ref bodyVelocities, ref bodyReferences, count, ref wsvA, ref wsvB);
+                Bodies.ScatterVelocities(ref wsvA, ref wsvB, ref bodyVelocities, ref bodyReferences, count);
             }
         }
 

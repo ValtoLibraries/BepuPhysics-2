@@ -116,6 +116,7 @@ namespace BepuUtilities.Memory
             public readonly int BlockSize;
             public int BlockCount;
 
+            internal const int IdPowerShift = 26;
 
             public PowerPool(int power, int minimumBlockSize, int expectedPooledCount)
             {
@@ -176,7 +177,8 @@ namespace BepuUtilities.Memory
                 }
 
                 var indexInBlock = slot & SuballocationsPerBlockMask;
-                buffer = new RawBuffer(Blocks[blockIndex].Allocate(indexInBlock, SuballocationSize), SuballocationSize, slot);
+                buffer = new RawBuffer(Blocks[blockIndex].Allocate(indexInBlock, SuballocationSize), SuballocationSize, (Power << IdPowerShift) | slot);
+                Debug.Assert(buffer.Id >= 0 && Power >= 0 && Power < 32, "Slot/power should be safely encoded in a 32 bit integer.");
 #if DEBUG
                 const int maximumOutstandingCapacity = 1 << 29;
                 Debug.Assert(outstandingIds.Count * SuballocationSize <= maximumOutstandingCapacity,
@@ -195,19 +197,36 @@ namespace BepuUtilities.Memory
 #endif
             }
 
-            public unsafe void Return(ref RawBuffer buffer)
+            [Conditional("DEBUG")]
+            internal unsafe void ValidateBufferIsContained(ref RawBuffer buffer)
+            {
+                //There are a lot of ways to screw this up. Try to catch as many as possible!
+                var slotIndex = buffer.Id & ((1 << IdPowerShift) - 1);
+                var blockIndex = slotIndex >> SuballocationsPerBlockShift;
+                var indexInAllocatorBlock = slotIndex & SuballocationsPerBlockMask;
+                Debug.Assert(buffer.Length == SuballocationSize,
+                  "A buffer taken from a pool should have a specific size.");
+                Debug.Assert(blockIndex >= 0 && blockIndex < BlockCount,
+                    "The block pointed to by a returned buffer should actually exist within the pool.");
+                var memoryOffset = buffer.Memory - Blocks[blockIndex].Pointer;
+                Debug.Assert(memoryOffset >= 0 && memoryOffset < Blocks[blockIndex].Array.Length,
+                    "If a raw buffer points to a given block as its source, the address should be within the block's memory region.");
+                Debug.Assert(Blocks[blockIndex].Pointer + indexInAllocatorBlock * SuballocationSize == buffer.Memory,
+                    "The implied address of a buffer in its block should match its actual address.");
+                Debug.Assert(buffer.Length + indexInAllocatorBlock * SuballocationSize <= Blocks[blockIndex].Array.Length,
+                    "The extent of the buffer should fit within the block.");
+            }
+
+            public unsafe void Return(int slotIndex)
             {
 #if DEBUG 
-                //There are a lot of ways to screw this up. Try to catch as many as possible!
-                var blockIndex = buffer.Id >> SuballocationsPerBlockShift;
-                var indexInAllocatorBlock = buffer.Id & SuballocationsPerBlockMask;
-                Debug.Assert(outstandingIds.Remove(buffer.Id),
+                Debug.Assert(outstandingIds.Remove(slotIndex),
                     "This buffer id must have been taken from the pool previously.");
 #if LEAKDEBUG
                 bool found = false;
                 foreach (var pair in outstandingAllocators)
                 {
-                    if (pair.Value.Remove(buffer.Id))
+                    if (pair.Value.Remove(slotIndex))
                     {
                         found = true;
                         if (pair.Value.Count == 0)
@@ -219,19 +238,8 @@ namespace BepuUtilities.Memory
                 }
                 Debug.Assert(found, "Allocator set must contain the buffer id.");
 #endif
-                Debug.Assert(buffer.Length == SuballocationSize,
-                    "A buffer taken from a pool should have a specific size.");
-                Debug.Assert(blockIndex >= 0 && blockIndex < BlockCount,
-                    "The block pointed to by a returned buffer should actually exist within the pool.");
-                var memoryOffset = buffer.Memory - Blocks[blockIndex].Pointer;
-                Debug.Assert(memoryOffset >= 0 && memoryOffset < Blocks[blockIndex].Array.Length,
-                    "If a raw buffer points to a given block as its source, the address should be within the block's memory region.");
-                Debug.Assert(Blocks[blockIndex].Pointer + indexInAllocatorBlock * SuballocationSize == buffer.Memory,
-                    "The implied address of a buffer in its block should match its actual address.");
-                Debug.Assert(buffer.Length + indexInAllocatorBlock * SuballocationSize <= Blocks[blockIndex].Array.Length,
-                    "The extent of the buffer should fit within the block.");
 #endif
-                Slots.Return(buffer.Id, new PassthroughArrayPool<int>());
+                Slots.Return(slotIndex, new PassthroughArrayPool<int>());
             }
 
             public void Clear()
@@ -309,6 +317,23 @@ namespace BepuUtilities.Memory
         {
             TakeForPower(SpanHelper.GetContainingPowerOf2(count), out buffer);
         }
+
+        /// <summary>
+        /// Takes a buffer large enough to contain a number of instances of a given type. Capacity may be larger than requested.
+        /// </summary>
+        /// <typeparam name="T">Type of the instances in the buffer.</typeparam>
+        /// <param name="count">Number of instances to request from the pool.</param>
+        /// <param name="buffer">Buffer large enough to contain the requested number of typed instances.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Take<T>(int count, out Buffer<T> buffer)
+        {
+            //Avoid returning a zero length span because 1 byte / Unsafe.SizeOf<T>() happens to be zero.
+            if (count == 0)
+                count = 1;
+            Take(count * Unsafe.SizeOf<T>(), out var rawBuffer);
+            buffer = rawBuffer.As<T>();
+        }
+
         /// <summary>
         /// Takes a buffer large enough to contain a number of bytes given by a power, where the number of bytes is 2^power.
         /// </summary>
@@ -322,18 +347,26 @@ namespace BepuUtilities.Memory
             pools[power].Take(out buffer);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static void DecomposeId(int bufferId, out int powerIndex, out int slotIndex)
+        {
+            powerIndex = bufferId >> PowerPool.IdPowerShift;
+            slotIndex = bufferId & ((1 << PowerPool.IdPowerShift) - 1);
+        }
+
         /// <summary>
-        /// Returns a buffer to the pool without clearing the reference.
+        /// Returns a buffer to the pool by id.
         /// </summary>
         /// <param name="buffer">Buffer to return to the pool.</param>
         /// <remarks>Typed buffer pools zero out the passed-in buffer by convention.
         /// This costs very little and avoids a wide variety of bugs (either directly or by forcing fast failure). For consistency, BufferPool.Return does the same thing.
         /// This "Unsafe" overload should be used only in cases where there's a reason to bypass the clear; the naming is intended to dissuade casual use.</remarks>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe void ReturnUnsafely(ref RawBuffer buffer)
+        public unsafe void ReturnUnsafely(int id)
         {
             ValidatePinnedState(true);
-            pools[SpanHelper.GetContainingPowerOf2(buffer.Length)].Return(ref buffer);
+            DecomposeId(id, out var powerIndex, out var slotIndex);
+            pools[powerIndex].Return(slotIndex);
         }
 
         /// <summary>
@@ -343,16 +376,20 @@ namespace BepuUtilities.Memory
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void Return(ref RawBuffer buffer)
         {
-            ReturnUnsafely(ref buffer);
+#if DEBUG
+            DecomposeId(buffer.Id, out var powerIndex, out var slotIndex);
+            pools[powerIndex].ValidateBufferIsContained(ref buffer);
+#endif
+            ReturnUnsafely(buffer.Id);
             buffer = new RawBuffer();
         }
 
         /// <summary>
         /// Resizes a buffer to the smallest size available in the pool which contains the target size. Copies a subset of elements into the new buffer.
         /// </summary>
+        /// <param name="buffer">Buffer reference to resize.</param>
         /// <param name="targetSize">Number of bytes to resize the buffer for.</param>
         /// <param name="copyCount">Number of bytes to copy into the new buffer from the old buffer.</param>
-        /// <param name="pool">Pool to return the old buffer to, if it actually exists, and to pull the new buffer from.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void Resize(ref RawBuffer buffer, int targetSize, int copyCount)
         {
@@ -366,7 +403,36 @@ namespace BepuUtilities.Memory
                     //Don't bother copying from or re-pooling empty buffers. They're uninitialized.
                     Debug.Assert(copyCount <= targetSize);
                     Unsafe.CopyBlockUnaligned(newBuffer.Memory, buffer.Memory, (uint)copyCount);
-                    ReturnUnsafely(ref buffer);
+                    ReturnUnsafely(buffer.Id);
+                }
+                else
+                {
+                    Debug.Assert(copyCount == 0, "Should not be trying to copy elements from an empty span.");
+                }
+                buffer = newBuffer;
+            }
+        }
+
+        /// <summary>
+        /// Resizes a typed buffer to the smallest size available in the pool which contains the target size. Copies a subset of elements into the new buffer.
+        /// </summary>
+        /// <typeparam name="T">Type of the buffer to resize.</typeparam>
+        /// <param name="buffer">Buffer reference to resize.</param>
+        /// <param name="targetSize">Number of elements to resize the buffer for.</param>
+        /// <param name="copyCount">Number of elements to copy into the new buffer from the old buffer.</param>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Resize<T>(ref Buffer<T> buffer, int targetSize, int copyCount)
+        {
+            //Only do anything if the new size is actually different from the current size.
+            targetSize = BufferPool<T>.GetLowestContainingElementCount(targetSize);
+            if (buffer.Length != targetSize) //Note that we don't check for allocated status- for buffers, a length of 0 is the same as being unallocated.
+            {
+                Take(targetSize, out Buffer<T> newBuffer);
+                if (buffer.Length > 0)
+                {
+                    //Don't bother copying from or re-pooling empty buffers. They're uninitialized.
+                    buffer.CopyTo(0, ref newBuffer, 0, copyCount);
+                    ReturnUnsafely(buffer.Id);
                 }
                 else
                 {
@@ -524,58 +590,32 @@ namespace BepuUtilities.Memory
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Take(int count, out Buffer<T> span)
         {
-            //Avoid returning a zero length span because 1 byte / Unsafe.SizeOf<T>() happens to be zero.
-            if (count == 0)
-                count = 1;
-            Raw.Take(Math.Max(1, count) * Unsafe.SizeOf<T>(), out var rawBuffer);
-            span = rawBuffer.As<T>();
+            Raw.Take(count, out span);
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void TakeForPower(int power, out Buffer<T> span)
         {
             //Note that we can't directly use TakeForPower from the underlying pool- the actual power needed at the byte level differs!
             Debug.Assert(power >= 0 && power < 31, "Power must be positive and 2^power must fit within a signed integer.");
-            Raw.Take((1 << power) * Unsafe.SizeOf<T>(), out var rawBuffer);
-            span = rawBuffer.As<T>();
+            Raw.Take(1 << power, out span);
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void Return(ref Buffer<T> span)
         {
-            //Note that we have to rederive the original allocation size, since the size of T might not have allowed size * count to equal the original byte count.
-            Debug.Assert(span.Length > 0, "If this span has zero length, then it can't be an original request, and so isn't a valid buffer to return.");
-            var rawBuffer = new RawBuffer(span.Memory, 1 << SpanHelper.GetContainingPowerOf2(Unsafe.SizeOf<T>() * span.Length), span.Id);
-            Raw.ReturnUnsafely(ref rawBuffer);
+            Raw.ReturnUnsafely(span.Id);
             span = new Buffer<T>();
         }
 
-
         /// <summary>
-        /// Resizes a buffer to the smallest size available in the pool which contains the target size. Copies a subset of elements into the new buffer.
+        /// Resizes a typed buffer to the smallest size available in the pool which contains the target size. Copies a subset of elements into the new buffer.
         /// </summary>
+        /// <param name="buffer">Buffer reference to resize.</param>
         /// <param name="targetSize">Number of elements to resize the buffer for.</param>
         /// <param name="copyCount">Number of elements to copy into the new buffer from the old buffer.</param>
-        /// <param name="pool">Pool to return the old buffer to, if it actually exists, and to pull the new buffer from.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Resize(ref Buffer<T> buffer, int targetSize, int copyCount)
         {
-            //Only do anything if the new size is actually different from the current size.
-            targetSize = GetLowestContainingElementCount(targetSize);
-            if (buffer.Length != targetSize) //Note that we don't check for allocated status- for buffers, a length of 0 is the same as being unallocated.
-            {
-                Take(targetSize, out var newBuffer);
-                if (buffer.Length > 0)
-                {
-                    //Don't bother copying from or re-pooling empty buffers. They're uninitialized.
-                    buffer.CopyTo(0, ref newBuffer, 0, copyCount);
-                    Return(ref buffer);
-                }
-                else
-                {
-                    Debug.Assert(copyCount == 0, "Should not be trying to copy elements from an empty span.");
-                }
-                buffer = newBuffer;
-            }
-
+            Raw.Resize(ref buffer, targetSize, copyCount);
         }
     }
 }

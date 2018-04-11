@@ -63,11 +63,11 @@ namespace BepuPhysics.CollisionDetection
                 //Note that the number of refit nodes is not necessarily bound by MaximumSubtrees. It is just a heuristic estimate. Resizing has to be supported.
                 QuickList<int, Buffer<int>>.Create(tree.Pool.SpecializeFor<int>(), MaximumSubtrees, out RefitNodes);
                 //Note that we haven't rigorously guaranteed a refinement count maximum, so it's possible that the workers will need to resize the per-thread refinement candidate lists.
-                for (int i =0; i < threadDispatcher.ThreadCount; ++i)
+                for (int i = 0; i < threadDispatcher.ThreadCount; ++i)
                 {
                     QuickList<int, Buffer<int>>.Create(threadDispatcher.GetThreadMemoryPool(i).SpecializeFor<int>(), estimatedRefinementCandidateCount, out RefinementCandidates[i]);
                 }
-                
+
                 int multithreadingLeafCountThreshold = Tree.leafCount / (threadDispatcher.ThreadCount * 2);
                 if (multithreadingLeafCountThreshold < RefinementLeafCountThreshold)
                     multithreadingLeafCountThreshold = RefinementLeafCountThreshold;
@@ -82,9 +82,8 @@ namespace BepuPhysics.CollisionDetection
                 for (int i = 0; i < threadDispatcher.ThreadCount; ++i)
                 {
                     refinementCandidatesCount += RefinementCandidates[i].Count;
-
                 }
-                Tree.GetRefineTuning(frameIndex, refinementCandidatesCount, refineAggressivenessScale, RefitCostChange, threadDispatcher.ThreadCount,
+                Tree.GetRefineTuning(frameIndex, refinementCandidatesCount, refineAggressivenessScale, RefitCostChange,
                     out var targetRefinementCount, out var period, out var offset);
                 QuickList<int, Buffer<int>>.Create(tree.Pool.SpecializeFor<int>(), targetRefinementCount, out RefinementTargets);
 
@@ -107,6 +106,7 @@ namespace BepuPhysics.CollisionDetection
                     }
                     Debug.Assert(index < RefinementCandidates[currentCandidatesIndex].Count && index >= 0);
                     var nodeIndex = RefinementCandidates[currentCandidatesIndex][index];
+                    Debug.Assert(tree.nodes[nodeIndex].RefineFlag == 0, "Refinement target search shouldn't run into the same node twice!");
                     RefinementTargets.AddUnsafely(nodeIndex);
                     tree.nodes[nodeIndex].RefineFlag = 1;
                 }
@@ -116,10 +116,15 @@ namespace BepuPhysics.CollisionDetection
                     RefinementTargets.AddUnsafely(0);
                     tree.nodes->RefineFlag = 1;
                 }
-
-
                 RefineIndex = -1;
+
                 threadDispatcher.DispatchWorkers(RefineAction);
+                //Note that we defer the refine flag clear until after the refinements complete. If we did it within the refine action itself, 
+                //it would introduce nondeterminism by allowing refines to progress based on their order of completion.
+                for (int i =0; i < RefinementTargets.Count; ++i)
+                {
+                    Tree.nodes[RefinementTargets[i]].RefineFlag = 0;
+                }
 
                 //To multithread this, give each worker a contiguous chunk of nodes. You want to do the biggest chunks possible to chain decent cache behavior as far as possible.
                 //Note that more cache optimization is required with more threads, since spreading it out more slightly lessens its effectiveness.
@@ -338,8 +343,6 @@ namespace BepuPhysics.CollisionDetection
                     Tree.BinnedRefine(RefinementTargets[refineIndex], ref subtreeReferences, MaximumSubtrees, ref treeletInternalNodes, ref resources, threadPool);
                     subtreeReferences.Count = 0;
                     treeletInternalNodes.Count = 0;
-                    //Allow other refines to traverse this node.
-                    Tree.nodes[RefinementTargets[refineIndex]].RefineFlag = 0;
                 }
 
                 subtreeReferences.Dispose(threadIntPool);

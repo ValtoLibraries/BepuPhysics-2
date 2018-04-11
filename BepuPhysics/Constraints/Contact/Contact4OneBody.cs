@@ -5,15 +5,17 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Quaternion = BepuUtilities.Quaternion;
-using static BepuPhysics.GatherScatter;
+using static BepuUtilities.GatherScatter;
+using BepuUtilities;
+
 namespace BepuPhysics.Constraints.Contact
 {
-    public struct Contact4OneBody : IConstraintDescription<Contact4OneBody>
+    public struct Contact4OneBody : IConvexOneBodyContactConstraintDescription<Contact4OneBody>
     {
-        public ManifoldContactData Contact0;
-        public ManifoldContactData Contact1;
-        public ManifoldContactData Contact2;
-        public ManifoldContactData Contact3;
+        public ConstraintContactData Contact0;
+        public ConstraintContactData Contact1;
+        public ConstraintContactData Contact2;
+        public ConstraintContactData Contact3;
         public float FrictionCoefficient;
         public Vector3 Normal;
         public SpringSettings SpringSettings;
@@ -42,8 +44,8 @@ namespace BepuPhysics.Constraints.Contact
             GetFirst(ref target.Normal.Y) = Normal.Y;
             GetFirst(ref target.Normal.Z) = Normal.Z;
 
-            GetFirst(ref target.SpringSettings.NaturalFrequency) = SpringSettings.NaturalFrequency;
-            GetFirst(ref target.SpringSettings.DampingRatio) = SpringSettings.DampingRatio;
+            GetFirst(ref target.SpringSettings.AngularFrequency) = SpringSettings.AngularFrequency;
+            GetFirst(ref target.SpringSettings.TwiceDampingRatio) = SpringSettings.TwiceDampingRatio;
             GetFirst(ref target.MaximumRecoveryVelocity) = MaximumRecoveryVelocity;
 
             GetFirst(ref target.PenetrationDepth0) = Contact0.PenetrationDepth;
@@ -76,8 +78,8 @@ namespace BepuPhysics.Constraints.Contact
             description.Normal.Y = GetFirst(ref source.Normal.Y);
             description.Normal.Z = GetFirst(ref source.Normal.Z);
 
-            description.SpringSettings.NaturalFrequency = GetFirst(ref source.SpringSettings.NaturalFrequency);
-            description.SpringSettings.DampingRatio = GetFirst(ref source.SpringSettings.DampingRatio);
+            description.SpringSettings.AngularFrequency = GetFirst(ref source.SpringSettings.AngularFrequency);
+            description.SpringSettings.TwiceDampingRatio = GetFirst(ref source.SpringSettings.TwiceDampingRatio);
             description.MaximumRecoveryVelocity = GetFirst(ref source.MaximumRecoveryVelocity);
 
             description.Contact0.PenetrationDepth = GetFirst(ref source.PenetrationDepth0);
@@ -85,6 +87,15 @@ namespace BepuPhysics.Constraints.Contact
             description.Contact2.PenetrationDepth = GetFirst(ref source.PenetrationDepth2);
             description.Contact3.PenetrationDepth = GetFirst(ref source.PenetrationDepth3);
 
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void CopyManifoldWideProperties(ref Vector3 normal, ref PairMaterialProperties material)
+        {
+            FrictionCoefficient = material.FrictionCoefficient;
+            Normal = normal;
+            SpringSettings = material.SpringSettings;
+            MaximumRecoveryVelocity = material.MaximumRecoveryVelocity;
         }
 
         public int ConstraintTypeId
@@ -116,7 +127,7 @@ namespace BepuPhysics.Constraints.Contact
         public Vector<float> PenetrationDepth2;
         public Vector<float> PenetrationDepth3;
     }
-    
+
     //The key observation here is that we have 7DOFs worth of constraints that all share the exact same bodies.
     //Despite the potential premultiplication optimizations, we focus on a few big wins:
     //1) Sharing the inverse mass for the impulse->velocity projection across all constraints.
