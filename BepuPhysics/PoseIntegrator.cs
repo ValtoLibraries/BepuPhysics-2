@@ -47,12 +47,97 @@ namespace BepuPhysics
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void RotateInverseInertia(ref Triangular3x3 localInverseInertiaTensor, ref Quaternion orientation, out Triangular3x3 rotatedInverseInertiaTensor)
         {
-            Matrix3x3.CreateFromQuaternion(ref orientation, out var orientationMatrix);
+            Matrix3x3.CreateFromQuaternion(orientation, out var orientationMatrix);
             //I^-1 = RT * Ilocal^-1 * R 
             //NOTE: If you were willing to confuse users a little bit, the local inertia could be required to be diagonal.
             //This would be totally fine for all the primitive types which happen to have diagonal inertias, but for more complex shapes (convex hulls, meshes), 
             //there would need to be a reorientation step. That could be confusing, and it's probably not worth it.
             Triangular3x3.RotationSandwich(ref orientationMatrix, ref localInverseInertiaTensor, out rotatedInverseInertiaTensor);
+        }
+      
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static float Cos(float x)
+        {
+            //This exists primarily for consistency between the PoseIntegrator and sweeps, not necessarily for raw performance relative to Math.Cos.
+            if (x < 0)
+                x = -x;
+            var intervalIndex = x * (1f / MathHelper.TwoPi);
+            x -= (int)intervalIndex * MathHelper.TwoPi;
+
+            //[0, pi/2] = f(x)
+            //(pi/2, pi] = -f(Pi - x)
+            //(pi, 3 * pi / 2] = -f(x - Pi)
+            //(3*pi/2, 2*pi] = f(2 * Pi - x)
+            //This could be done more cleverly.
+            bool negate;
+            if (x < MathHelper.Pi)
+            {
+                if (x < MathHelper.PiOver2)
+                {
+                    negate = false;
+                }
+                else
+                {
+                    x = MathHelper.Pi - x;
+                    negate = true;
+                }
+            }
+            else
+            {
+                if (x < 3 * MathHelper.PiOver2)
+                {
+                    x = x - MathHelper.Pi;
+                    negate = true;
+                }
+                else
+                {
+                    x = MathHelper.TwoPi - x;
+                    negate = false;
+                }
+            }
+
+            //The expression is a rational interpolation from 0 to Pi/2. Maximum error is a little more than 3e-6.
+            var x2 = x * x;
+            var x3 = x2 * x;
+            //TODO: This could be reorganized into two streams of FMAs if that was available.
+            var numerator = 1 - 0.24f * x - 0.4266f * x2 + 0.110838f * x3;
+            var denominator = 1 - 0.240082f * x + 0.0741637f * x2 - 0.0118786f * x3;
+            var result = numerator / denominator;
+            return negate ? -result : result;
+
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static float Sin(float x)
+        {
+            return Cos(x - MathHelper.PiOver2);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe void Integrate(in RigidPose pose, in BodyVelocity velocity, float dt, out RigidPose integratedPose)
+        {
+            var displacement = velocity.Linear * dt;
+            integratedPose.Position = pose.Position + displacement;
+
+            //Integrate orientation with the latest angular velocity.
+            //Note that we don't bother with conservation of angular momentum or the gyroscopic term or anything else- 
+            //it's not exactly correct, but it's stable, fast, and no one really notices. Unless they're trying to spin a multitool in space or something.
+            //(But frankly, that just looks like reality has a bug.)
+
+            var speed = velocity.Angular.Length();
+            if (speed > 1e-15f)
+            {
+                var halfAngle = speed * dt * 0.5f;
+                Quaternion q;
+                Unsafe.As<Quaternion, Vector3>(ref *&q) = velocity.Angular * (Sin(halfAngle) / speed);
+                q.W = Cos(halfAngle);
+                Quaternion.ConcatenateWithoutOverlap(pose.Orientation, q, out integratedPose.Orientation);
+                Quaternion.Normalize(ref integratedPose.Orientation);
+            }
+            else
+            {
+                integratedPose.Orientation = pose.Orientation;
+            }
         }
 
         unsafe void IntegrateBodies(int startIndex, int endIndex, float dt, ref BoundingBoxBatcher boundingBoxBatcher)
@@ -62,14 +147,13 @@ namespace BepuPhysics
             ref var baseLocalInertias = ref bodies.ActiveSet.LocalInertias[0];
             ref var baseInertias = ref bodies.Inertias[0];
             ref var baseActivity = ref bodies.ActiveSet.Activity[0];
-            var halfDt = dt * 0.5f;
             for (int i = startIndex; i < endIndex; ++i)
             {
                 //Integrate position with the latest linear velocity. Note that gravity is integrated afterwards.
                 ref var pose = ref Unsafe.Add(ref basePoses, i);
                 ref var velocity = ref Unsafe.Add(ref baseVelocities, i);
-                var displacement = velocity.Linear * dt;
-                pose.Position += displacement;
+
+                Integrate(pose, velocity, dt, out pose);
 
                 //Update sleep candidacy. Note that this comes before velocity integration. That means an object can go inactive with gravity-induced velocity.
                 //That is actually intended: when the narrowphase wakes up an island, the accumulated impulses in the island will be ready for gravity's influence.
@@ -90,19 +174,6 @@ namespace BepuPhysics
                         activity.SleepCandidate = true;
                     }
                 }
-
-                //Integrate orientation with the latest angular velocity.
-                //Note that we don't bother with conservation of angular momentum or the gyroscopic term or anything else- 
-                //it's not exactly correct, but it's stable, fast, and no one really notices. Unless they're trying to spin a multitool in space or something.
-                //(But frankly, that just looks like reality has a bug.)
-
-                //TODO: This is a pretty strong combo-hack. Check codegen.
-                Quaternion multiplier;
-                Unsafe.As<float, Vector3>(ref *&multiplier.X) = velocity.Angular * halfDt;
-                multiplier.W = 0;
-                Quaternion.ConcatenateWithoutOverlap(ref pose.Orientation, ref *&multiplier, out var increment);
-                Quaternion.Add(ref pose.Orientation, ref increment, out pose.Orientation);
-                Quaternion.Normalize(ref pose.Orientation);
 
                 //Update the inertia tensors for the new orientation.
                 //TODO: If the pose integrator is positioned at the end of an update, the first frame after any out-of-timestep orientation change or local inertia change

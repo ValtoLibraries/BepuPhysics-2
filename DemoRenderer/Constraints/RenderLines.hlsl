@@ -32,13 +32,12 @@ struct PSInput
 	nointerpolation float3 Start : LineStart;
 	nointerpolation float3 Direction : LineDirection;
 	nointerpolation float Length : LineLength;
-	nointerpolation float3 Color : ScreenLineColor0;
-	nointerpolation float3 BackgroundColor : ScreenLineColor1;
-	float PixelSize : WorldPixelSize;
+	nointerpolation uint PackedColor : ScreenLineColor0;
+	nointerpolation uint PackedBackgroundColor : ScreenLineColor1;
+	nointerpolation float InverseLineRadius : InverseLineRadius;
+	nointerpolation float TanAnglePerPixel : TanAnglePerPixel;
 };
-#define InnerRadius 0.5
-#define OuterRadius 0.75
-#define SampleRadius 0.70710678118
+#define TargetRadiusInPixels 1.0
 PSInput VSMain(uint vertexId : SV_VertexId)
 {
 	int instanceId = vertexId >> 3;
@@ -53,20 +52,22 @@ PSInput VSMain(uint vertexId : SV_VertexId)
 	output.Start = instance.Start - CameraPosition;
 	output.Direction = worldLine;
 	output.Length = worldLineLength;
-	output.Color = UnpackR11G11B10_UNorm(instance.PackedColor);
-	output.BackgroundColor = UnpackR11G11B10_UNorm(instance.PackedBackgroundColor);
-	//How wide is a pixel at this vertex, approximately?
+	output.PackedColor = instance.PackedColor;
+	output.PackedBackgroundColor = instance.PackedBackgroundColor;
+	output.TanAnglePerPixel = TanAnglePerPixel;
+	//How wide is a pixel at the line, approximately?
+	//Compute the closest point on the line to the camera.
+	float t = clamp(-dot(worldLine, output.Start), 0, worldLineLength);
+	float3 closestOnLine = output.Start + worldLine * t;
+	float distanceFromCamera = length(closestOnLine);
 	//Convert the vertex id to local box coordinates.
 	//Note that this id->coordinate transformation requires consistency with the index buffer
 	//to ensure proper triangle winding. A set bit in a given position makes it higher along the axis.
 	//So vertexId&1 == 1 => +x, vertexId&2 == 2 => +y, and vertexId&4 == 4 => +z.
 	float3 boxCoordinates = float3(vertexId & 1, (vertexId & 2) >> 1, (vertexId & 4) >> 2);
-	float3 endpoint = boxCoordinates.z > 0 ? instance.End : instance.Start;
-	//Note that distance is used instead of z. Resizing lines based on camera orientation is a bit odd.
-	float distance = length(endpoint - CameraPosition);
-	float pixelSize = distance * TanAnglePerPixel;
-	output.PixelSize = pixelSize;
-
+	float pixelSize = distanceFromCamera * TanAnglePerPixel;
+	float lineRadius = TargetRadiusInPixels * pixelSize;
+	output.InverseLineRadius = 1.0 / lineRadius;
 
 	float3 worldLineX = cross(CameraForward, worldLine);
 	float worldLineXLength = length(worldLineX);
@@ -77,13 +78,10 @@ PSInput VSMain(uint vertexId : SV_VertexId)
 	}
 	worldLineX /= worldLineXLength;
 	float3 worldLineY = cross(worldLine, worldLineX);
-	//Use the pixel size in world space to pad out the bounding box.
-	const float paddingInPixels = OuterRadius + SampleRadius;
-
-	float worldPadding = paddingInPixels * pixelSize;
-	float3 paddingX = worldPadding * worldLineX;
-	float3 paddingY = worldPadding * worldLineY;
-	float3 paddingZ = worldPadding * worldLine;
+	//Use the line radius to pad out the box.
+	float3 paddingX = lineRadius * worldLineX;
+	float3 paddingY = lineRadius * worldLineY;
+	float3 paddingZ = lineRadius * worldLine;
 	float3 position = boxCoordinates.z > 0 ?
 		instance.End + paddingZ :
 		instance.Start - paddingZ;
@@ -105,40 +103,54 @@ struct PSOutput
 	float3 Color : SV_Target0;
 };
 
+
+float EvaluateIntegral(float x)
+{
+	//        { 0       (-inf, -1) }
+	// f(x) = { 1 + x   [-1, 0]	   }
+	//        { 1 - x   (0, 1]	   }
+	//        { 0       (1, inf)   }
+	//						 { -0.5				 (-inf, -1)	}
+	// integrate(f(x), dx) = { x + x^2/2	     [-1, 0]	}
+	//					     { x - x^2/2		 (0, 1]		}
+	//					     { 0.5				 (1, inf)	}
+	float negativeX = clamp(x, -1, 0);
+	float negativeInterval = negativeX + 0.5 * negativeX * negativeX;
+	float positiveX = clamp(x, 0, 1);
+	//Note that we're stacking the positive contribution on top of the negative contribution, so the 0.5 constant additive term is excluded.
+	float positiveInterval = positiveX - 0.5 * positiveX * positiveX;
+	return negativeInterval + positiveInterval;
+}
+
 PSOutput PSMain(PSInput input)
 {
 	PSOutput output;
-	//Treat the view ray as a plane. Construct the plane's normal from the rayDirection and vector of closest approach between the two lines (lineDirection x rayDirection).
-	//The plane normal is:
-	//N = rayDirection x (lineDirection x rayDirection) / ||lineDirection x rayDirection||
-	//(The vector triple product has some identities, but bleh.)
-	//tLine = dot(lineStart - origin, N) / -dot(N, lineDirection)
-	//Doing some algebra and noting that the origin is 0 here, that becomes:
-	//tLine = dot(lineStart, rayDirection x (lineDirection x rayDirection)) / -||lineDirection x rayDirection||^2
-
 	float3 rayDirection = input.ToBox;
-	float3 lineCrossRay = cross(input.Direction, rayDirection);
-	float3 numer = cross(rayDirection, lineCrossRay);
-	float denom = -dot(lineCrossRay, lineCrossRay);
-	//If the lines are parallel, just use the line start.
-	float tLine = denom > -1e-7f ? 0 : dot(input.Start, numer) / denom;
-
-	//The true tLine must be from 0 to lineLength.
-	tLine = clamp(tLine, 0, input.Length);
-
+	float rayLength = length(rayDirection);
+	rayDirection /= rayLength;
+	//Compute the closest points between the two line segments. No clamping to begin with.
+	//We want to minimize distance = ||(a + da * ta) - (b + db * tb)||.
+	//Taking the derivative with respect to ta and doing some algebra (taking into account ||da|| == ||db|| == 1) to solve for ta yields:
+	//ta = (da * (b - a) + (db * (a - b)) * (da * db)) / (1 - ((da * db) * (da * db))        
+	float daOffsetB = dot(input.Direction, -input.Start);
+	float dbOffsetB = dot(rayDirection, -input.Start);
+	float dadb = dot(input.Direction, rayDirection);
+	//Note potential division by zero when the axes are parallel. Arbitrarily clamp; near zero values will instead produce extreme values which get clamped to reasonable results.
+	float tLine = clamp((daOffsetB - dbOffsetB * dadb) / max(1e-15, 1.0 - dadb * dadb), 0, input.Length);
+		
 	float3 closestOnLine = input.Start + tLine * input.Direction;
-	float3 closestOnRay = rayDirection * (dot(closestOnLine, rayDirection) / dot(rayDirection, rayDirection));
+	//Note rayDirection is unit length.
+	float3 closestOnRay = rayDirection * dot(closestOnLine, rayDirection);
 	float lineDistance = distance(closestOnRay, closestOnLine);
-	float lineScreenDistance = lineDistance / input.PixelSize;
+	float normalizedDistance = lineDistance * input.InverseLineRadius;
+	float normalizedPixelSize = input.TanAnglePerPixel * rayLength * input.InverseLineRadius;
 
-	float innerDistance = lineScreenDistance - InnerRadius;
-	//This distance is measured in screen pixels. Treat every pixel as having a set radius.
-	//If the line's distance is beyond the sample radius, then there is zero coverage.
-	//If the distance is 0, then the sample is half covered.
-	//If the distance is less than -sampleRadius, then it's fully covered.
-	float innerColorScale = saturate(0.5 - innerDistance / (SampleRadius * 2));
-	//TODO: For now, don't bother using a falloff on the outer radius.
-	output.Color = input.Color * innerColorScale + input.BackgroundColor * (1 - innerColorScale);
-	//output.Color = 0;
+	//Integrate over the approximate span of the pixel along a 1d function representing the foreground intensity:
+	float halfWidth = 0.5 * normalizedPixelSize;
+	//Note that the integral is not allowed to reach outside of the radius; this avoids overdarkening. Coverage is handled by MSAA.
+	float a = max(-1, normalizedDistance - halfWidth);
+	float b = min(1, normalizedDistance + halfWidth);
+	float colorIntensity = saturate((EvaluateIntegral(b) - EvaluateIntegral(a)) / (b - a));
+	output.Color = lerp(UnpackR11G11B10_UNorm(input.PackedBackgroundColor), UnpackR11G11B10_UNorm(input.PackedColor), colorIntensity);
 	return output;
 }

@@ -6,6 +6,7 @@ using System.Diagnostics;
 using Quaternion = BepuUtilities.Quaternion;
 using BepuUtilities;
 using BepuUtilities.Collections;
+using BepuPhysics.Trees;
 
 namespace BepuPhysics.Collidables
 {
@@ -42,34 +43,34 @@ namespace BepuPhysics.Collidables
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void GetRotatedChildPose(ref RigidPose localPose, ref Quaternion orientation, out RigidPose rotatedChildPose)
+        public static void GetRotatedChildPose(in RigidPose localPose, in Quaternion orientation, out RigidPose rotatedChildPose)
         {
-            Quaternion.ConcatenateWithoutOverlap(ref localPose.Orientation, ref orientation, out rotatedChildPose.Orientation);
-            Quaternion.Transform(ref localPose.Position, ref orientation, out rotatedChildPose.Position);
+            Quaternion.ConcatenateWithoutOverlap(localPose.Orientation, orientation, out rotatedChildPose.Orientation);
+            Quaternion.Transform(localPose.Position, orientation, out rotatedChildPose.Position);
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void GetWorldPose(ref RigidPose localPose, ref RigidPose transform, out RigidPose worldPose)
+        public static void GetWorldPose(in RigidPose localPose, in RigidPose transform, out RigidPose worldPose)
         {
-            GetRotatedChildPose(ref localPose, ref transform.Orientation, out worldPose);
+            GetRotatedChildPose(localPose, transform.Orientation, out worldPose);
             //TODO: This is an area that has to be updated for high precision poses. May be able to centralize positional work
             //by deferring it until the final bounds scatter step. Would require looking up the position then, but could be worth simplicity.
             worldPose.Position += transform.Position;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void ComputeChildBounds(ref CompoundChild child, ref Quaternion orientation, Shapes shapeBatches, out Vector3 childMin, out Vector3 childMax)
+        static void ComputeChildBounds(in CompoundChild child, in Quaternion orientation, Shapes shapeBatches, out Vector3 childMin, out Vector3 childMax)
         {
-            GetRotatedChildPose(ref child.LocalPose, ref orientation, out var childPose);
+            GetRotatedChildPose(child.LocalPose, orientation, out var childPose);
             shapeBatches[child.ShapeIndex.Type].ComputeBounds(child.ShapeIndex.Index, ref childPose, out childMin, out childMax);
         }
 
-        public void GetBounds(ref Quaternion orientation, Shapes shapeBatches, out Vector3 min, out Vector3 max)
+        public void ComputeBounds(in Quaternion orientation, Shapes shapeBatches, out Vector3 min, out Vector3 max)
         {
-            ComputeChildBounds(ref Children[0], ref orientation, shapeBatches, out min, out max);
+            ComputeChildBounds(Children[0], orientation, shapeBatches, out min, out max);
             for (int i = 1; i < Children.Length; ++i)
             {
                 ref var child = ref Children[i];
-                ComputeChildBounds(ref Children[i], ref orientation, shapeBatches, out var childMin, out var childMax);
+                ComputeChildBounds(Children[i], orientation, shapeBatches, out var childMin, out var childMax);
                 BoundingBox.CreateMerged(ref min, ref max, ref childMin, ref childMax, out min, out max);
             }
         }
@@ -80,22 +81,22 @@ namespace BepuPhysics.Collidables
             for (int i = 0; i < Children.Length; ++i)
             {
                 ref var child = ref Children[i];
-                GetWorldPose(ref child.LocalPose, ref pose, out var childPose);
+                GetWorldPose(child.LocalPose, pose, out var childPose);
                 batcher.AddCompoundChild(bodyIndex, Children[i].ShapeIndex, ref childPose, ref velocity);
             }
         }
 
-        public bool RayTest(ref RigidPose pose, ref Vector3 origin, ref Vector3 direction, Shapes shapeBatches, out float t, out Vector3 normal)
+        public bool RayTest(in RigidPose pose, in Vector3 origin, in Vector3 direction, Shapes shapeBatches, out float t, out Vector3 normal)
         {
             t = float.MaxValue;
             normal = new Vector3();
             for (int i = 0; i < Children.Length; ++i)
             {
                 ref var child = ref Children[i];
-                GetRotatedChildPose(ref child.LocalPose, ref pose.Orientation, out var childPose);
+                GetRotatedChildPose(child.LocalPose, pose.Orientation, out var childPose);
                 //TODO: This is an area that has to be updated for high precision poses.
                 childPose.Position += pose.Position;
-                if (shapeBatches[child.ShapeIndex.Type].RayTest(child.ShapeIndex.Index, ref childPose, ref origin, ref direction, out var childT, out var childNormal) && childT < t)
+                if (shapeBatches[child.ShapeIndex.Type].RayTest(child.ShapeIndex.Index, childPose, origin, direction, out var childT, out var childNormal) && childT < t)
                 {
                     t = childT;
                     normal = childNormal;
@@ -104,11 +105,25 @@ namespace BepuPhysics.Collidables
             return t < float.MaxValue;
         }
 
+        public void RayTest<TRayHitHandler>(RigidPose pose, Shapes shapeBatches, ref RaySource rays, ref TRayHitHandler hitHandler) where TRayHitHandler : struct, IShapeRayHitHandler
+        {
+            for (int i = 0; i < Children.Length; ++i)
+            {
+                ref var child = ref Children[i];
+                GetRotatedChildPose(child.LocalPose, pose.Orientation, out var childPose);
+                //TODO: This is an area that has to be updated for high precision poses.
+                childPose.Position += pose.Position;
+                //Note that this will report an impact for every child, even if it's not the first impact.
+                shapeBatches[child.ShapeIndex.Type].RayTest(child.ShapeIndex.Index, childPose, ref rays, ref hitHandler);
+            }
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ShapeBatch CreateShapeBatch(BufferPool pool, int initialCapacity, Shapes shapes)
         {
             return new CompoundShapeBatch<Compound>(pool, initialCapacity, shapes);
         }
+
 
 
         /// <summary>

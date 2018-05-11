@@ -7,6 +7,7 @@ using BepuPhysics.Constraints;
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using BepuPhysics.Trees;
 
 namespace BepuPhysics
 {
@@ -96,7 +97,8 @@ namespace BepuPhysics
             }
 
             var simulation = new Simulation(bufferPool, initialAllocationSizes.Value);
-            var narrowPhase = new NarrowPhase<TNarrowPhaseCallbacks>(simulation, DefaultTypes.CreateDefaultCollisionTaskRegistry(),
+            var narrowPhase = new NarrowPhase<TNarrowPhaseCallbacks>(simulation, 
+                DefaultTypes.CreateDefaultCollisionTaskRegistry(), DefaultTypes.CreateDefaultSweepTaskRegistry(),
                 narrowPhaseCallbacks, initialAllocationSizes.Value.Islands + 1);
             DefaultTypes.RegisterDefaults(simulation.Solver, narrowPhase);
             simulation.NarrowPhase = narrowPhase;
@@ -187,7 +189,7 @@ namespace BepuPhysics
             //That includes gravity. If we sleep objects *before* gravity is applied in a given frame, then when those bodies are awakened, the accumulated impulses
             //will be less accurate because they assume that gravity has already been applied. This can cause a small bump.
             //So instead, velocity integration (and deactivation candidacy management) comes before sleep.
-
+            
             //Sleep at the start, on the other hand, stops some forms of unintuitive behavior when using direct awakenings. Just a matter of preference.
             ProfilerStart(Sleeper);
             Sleeper.Update(threadDispatcher, Deterministic);
@@ -214,11 +216,11 @@ namespace BepuPhysics
             ProfilerStart(PoseIntegrator);
             PoseIntegrator.Update(dt, BufferPool, threadDispatcher);
             ProfilerEnd(PoseIntegrator);
-
+            
             ProfilerStart(BroadPhase);
             BroadPhase.Update(threadDispatcher);
             ProfilerEnd(BroadPhase);
-            
+
             ProfilerStart(BroadPhaseOverlapFinder);
             BroadPhaseOverlapFinder.DispatchOverlaps(threadDispatcher);
             ProfilerEnd(BroadPhaseOverlapFinder);

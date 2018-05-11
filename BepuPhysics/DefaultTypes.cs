@@ -88,5 +88,20 @@ namespace BepuPhysics
             defaultTaskRegistry.Register(new CompoundPairCollisionTask());
             return defaultTaskRegistry;
         }
+
+        /// <summary>
+        /// Creates a task registry containing the default sweep task types.
+        /// </summary>
+        public static SweepTaskRegistry CreateDefaultSweepTaskRegistry()
+        {
+            var defaultTaskRegistry = new SweepTaskRegistry();
+            defaultTaskRegistry.Register(new ConvexPairSweepTask<Sphere, SphereWide, Sphere, SphereWide, SpherePairDistanceTester>());
+            defaultTaskRegistry.Register(new ConvexPairSweepTask<Sphere, SphereWide, Capsule, CapsuleWide, SphereCapsuleDistanceTester>());
+            defaultTaskRegistry.Register(new ConvexPairSweepTask<Sphere, SphereWide, Box, BoxWide, SphereBoxDistanceTester>());
+            defaultTaskRegistry.Register(new ConvexPairSweepTask<Capsule, CapsuleWide, Capsule, CapsuleWide, CapsulePairDistanceTester>());
+            defaultTaskRegistry.Register(new ConvexPairSweepTask<Capsule, CapsuleWide, Box, BoxWide, CapsuleBoxDistanceTester>());
+            defaultTaskRegistry.Register(new ConvexPairSweepTask<Box, BoxWide, Box, BoxWide, BoxPairDistanceTester>());
+            return defaultTaskRegistry;
+        }
     }
 }

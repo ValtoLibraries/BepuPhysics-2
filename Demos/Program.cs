@@ -1,6 +1,9 @@
-﻿using BepuUtilities;
+﻿using BepuPhysics.Collidables;
+using BepuUtilities;
 using DemoContentLoader;
 using DemoRenderer.UI;
+using Demos.Demos;
+using Demos.SpecializedTests;
 using DemoUtilities;
 using OpenTK;
 

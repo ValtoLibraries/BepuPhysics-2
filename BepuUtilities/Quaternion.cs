@@ -55,7 +55,7 @@ namespace BepuUtilities
         /// <param name="b">Second quaternion to add.</param>
         /// <param name="result">Sum of the addition.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Add(ref Quaternion a, ref Quaternion b, out Quaternion result)
+        public static void Add(in Quaternion a, in Quaternion b, out Quaternion result)
         {
             result.X = a.X + b.X;
             result.Y = a.Y + b.Y;
@@ -87,7 +87,7 @@ namespace BepuUtilities
         /// <param name="b">Second quaternion to concatenate.</param>
         /// <param name="result">Product of the concatenation.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void ConcatenateWithoutOverlap(ref Quaternion a, ref Quaternion b, out Quaternion result)
+        public static void ConcatenateWithoutOverlap(in Quaternion a, in Quaternion b, out Quaternion result)
         {
             result.X = a.W * b.X + a.X * b.W + a.Z * b.Y - a.Y * b.Z;
             result.Y = a.W * b.Y + a.Y * b.W + a.X * b.Z - a.Z * b.X;
@@ -105,7 +105,7 @@ namespace BepuUtilities
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Quaternion Concatenate(Quaternion a, Quaternion b)
         {
-            ConcatenateWithoutOverlap(ref a, ref b, out var result);
+            ConcatenateWithoutOverlap(a, b, out var result);
             return result;
         }
 
@@ -220,7 +220,7 @@ namespace BepuUtilities
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Normalize(ref Quaternion quaternion)
         {
-            ref var q = ref Unsafe.As<float, Vector4>(ref quaternion.X);
+            ref var q = ref Unsafe.As<Quaternion, Vector4>(ref quaternion);
             q = q / (float)Math.Sqrt(Vector4.Dot(q, q)); //not great; MathF when available or perhaps alternatives?
         }
 
@@ -463,7 +463,7 @@ namespace BepuUtilities
         /// <param name="rotation">Rotation to apply to the vector.</param>
         /// <param name="result">Transformed vector.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Transform(ref Vector3 v, ref Quaternion rotation, out Vector3 result)
+        public static void Transform(in Vector3 v, in Quaternion rotation, out Vector3 result)
         {
             //This operation is an optimized-down version of v' = q * v * q^-1.
             //The expanded form would be to treat v as an 'axis only' quaternion
@@ -501,7 +501,7 @@ namespace BepuUtilities
         public static Vector3 Transform(Vector3 v, Quaternion rotation)
         {
             Vector3 toReturn;
-            Transform(ref v, ref rotation, out toReturn);
+            Transform(v, rotation, out toReturn);
             return toReturn;
         }
 
@@ -511,7 +511,7 @@ namespace BepuUtilities
         /// <param name="rotation">Rotation to apply to the vector.</param>
         /// <param name="result">Transformed vector.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void TransformUnitX(ref Quaternion rotation, out Vector3 result)
+        public static void TransformUnitX(in Quaternion rotation, out Vector3 result)
         {
             //This operation is an optimized-down version of v' = q * v * q^-1.
             //The expanded form would be to treat v as an 'axis only' quaternion
@@ -537,7 +537,7 @@ namespace BepuUtilities
         /// <param name="rotation">Rotation to apply to the vector.</param>
         /// <param name="result">Transformed vector.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void TransformUnitY(ref Quaternion rotation, out Vector3 result)
+        public static void TransformUnitY(in Quaternion rotation, out Vector3 result)
         {
             //This operation is an optimized-down version of v' = q * v * q^-1.
             //The expanded form would be to treat v as an 'axis only' quaternion
@@ -563,7 +563,7 @@ namespace BepuUtilities
         /// <param name="rotation">Rotation to apply to the vector.</param>
         /// <param name="result">Transformed vector.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void TransformUnitZ(ref Quaternion rotation, out Vector3 result)
+        public static void TransformUnitZ(in Quaternion rotation, out Vector3 result)
         {
             //This operation is an optimized-down version of v' = q * v * q^-1.
             //The expanded form would be to treat v as an 'axis only' quaternion
@@ -775,7 +775,7 @@ namespace BepuUtilities
         {
             Quaternion startInverse;
             Conjugate(ref start, out startInverse);
-            ConcatenateWithoutOverlap(ref startInverse, ref end, out relative);
+            ConcatenateWithoutOverlap(startInverse, end, out relative);
         }
 
 
@@ -791,7 +791,7 @@ namespace BepuUtilities
         {
             Quaternion basisInverse;
             Conjugate(ref targetBasis, out basisInverse);
-            ConcatenateWithoutOverlap(ref rotation, ref basisInverse, out localRotation);
+            ConcatenateWithoutOverlap(rotation, basisInverse, out localRotation);
         }
 
         /// <summary>

@@ -2,10 +2,12 @@
 using BepuPhysics.CollisionDetection;
 using BepuUtilities;
 using BepuUtilities.Memory;
+using BepuPhysics.Trees;
 using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Text;
+using System.Runtime.CompilerServices;
 
 namespace Demos.SpecializedTests
 {
@@ -140,7 +142,7 @@ namespace Demos.SpecializedTests
             {
                 GetBoundsForLeaf(smaller, i, out var bounds);
                 bruteResultsEnumerator.QuerySourceIndex = i;
-                larger.GetOverlaps(ref bounds, ref bruteResultsEnumerator);
+                larger.GetOverlaps(bounds, ref bruteResultsEnumerator);
             }
             SortPairs(bruteResultsEnumerator.Pairs);
 
@@ -163,13 +165,15 @@ namespace Demos.SpecializedTests
             treeB.Dispose();
         }
 
-        struct BruteForceResultsEnumerator : IForEach<int>
+        struct BruteForceResultsEnumerator : IBreakableForEach<int>
         {
             public List<(int a, int b)> Pairs;
             public int QuerySourceIndex;
-            public void LoopBody(int foundIndex)
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool LoopBody(int foundIndex)
             {
                 Pairs.Add((QuerySourceIndex, foundIndex));
+                return true;
             }
         }
 

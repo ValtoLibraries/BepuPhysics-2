@@ -168,7 +168,7 @@ namespace DemoRenderer
         /// <param name="color">RGB color to pack.</param>
         /// <returns>Color packed into 32 bits.</returns>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint PackColor(ref Vector3 color)
+        public static uint PackColor(in Vector3 color)
         {
             const uint RScale = (1 << 11) - 1;
             const uint GScale = (1 << 11) - 1;
@@ -206,7 +206,7 @@ namespace DemoRenderer
         /// <param name="source">Orientation to pack.</param>
         /// <param name="packed">W-less packed orientation, with remaining components negated to guarantee that the reconstructed positive W component is valid.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void PackOrientation(ref Quaternion source, out Vector3 packed)
+        public static void PackOrientation(in Quaternion source, out Vector3 packed)
         {
             packed = new Vector3(source.X, source.Y, source.Z);
             if (source.W < 0)
