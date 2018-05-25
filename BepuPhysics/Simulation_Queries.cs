@@ -153,7 +153,7 @@ namespace BepuPhysics
                             ShapeData, ShapeType, Pose.Orientation, Velocity,
                             targetShapeData, shape.Type, targetPose->Position - Pose.Position, targetPose->Orientation, new BodyVelocity(),
                             maximumT, MinimumProgression, ConvergenceThreshold, MaximumIterationCount,
-                            ref this, out var t0, out var t1, out var hitLocation, out var hitNormal);
+                            ref this, Simulation.Shapes, Simulation.NarrowPhase.SweepTaskRegistry, out var t0, out var t1, out var hitLocation, out var hitNormal);
                         if (result)
                         {
                             if (t1 > 0)
@@ -197,7 +197,7 @@ namespace BepuPhysics
             BoundingBoxBatcher.ExpandBoundingBox(ref min, ref max, velocity.Angular, maximumT, maximumRadius, maximumAngularExpansion);
             min += pose.Position;
             max += pose.Position;
-            var direction = velocity.Linear * maximumT;
+            var direction = velocity.Linear;
             SweepHitDispatcher<TSweepHitHandler> dispatcher;
             dispatcher.HitHandler = hitHandler;
             dispatcher.Pose = pose;
@@ -211,6 +211,8 @@ namespace BepuPhysics
             dispatcher.ConvergenceThreshold = convergenceThreshold;
             dispatcher.MaximumIterationCount = maximumIterationCount;
             BroadPhase.Sweep(min, max, direction, maximumT, ref dispatcher);
+            //The hit handler was copied to pass it into the child processing; since the user may (and probably does) rely on mutations, copy it back to the original reference.
+            hitHandler = dispatcher.HitHandler;
         }
 
         /// <summary>
@@ -239,7 +241,7 @@ namespace BepuPhysics
             var inverseVelocity = 1f / (velocity.Linear.Length() + tangentVelocity);
             var minimumProgressionT = minimumProgressionDistance * inverseVelocity;
             var convergenceThresholdT = convergenceThresholdDistance * inverseVelocity;
-            var maximumIterationCount = 12;
+            var maximumIterationCount = 25;
             Sweep(shape, pose, velocity, maximumT, ref hitHandler, minimumProgressionT, convergenceThresholdT, maximumIterationCount);
         }
     }

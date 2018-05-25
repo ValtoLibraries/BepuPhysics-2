@@ -99,7 +99,7 @@ namespace BepuPhysics.Constraints
             Matrix2x3Wide jacobianA;
             Matrix3x3Wide.TransformWithoutOverlap(ref localAX, ref orientationMatrixA, out jacobianA.X);
             Matrix3x3Wide.TransformWithoutOverlap(ref localAY, ref orientationMatrixA, out jacobianA.Y);
-            QuaternionWide.TransformWithoutOverlap(ref prestep.HingeAxisLocalB, ref orientationB, out var hingeAxisB);
+            QuaternionWide.TransformWithoutOverlap(prestep.HingeAxisLocalB, orientationB, out var hingeAxisB);
 
             //We project hingeAxisB onto the planes defined by A's axis X and and axis Y, and treat them as constant with respect to A's velocity. 
             //This hand waves away a bit of complexity related to the fact that A's axes have velocity too, but it works out pretty nicely in the end.
@@ -179,8 +179,8 @@ namespace BepuPhysics.Constraints
             var epsilon = new Vector<float>(1e-7f);
             var useFallbackX = Vector.LessThan(xLength, epsilon);
             var useFallbackY = Vector.LessThan(yLength, epsilon);
-            Vector3Wide.ConditionalSelect(ref useFallbackX, ref hingeAxisA, ref hingeAxisBOnPlaneX, out hingeAxisBOnPlaneX);
-            Vector3Wide.ConditionalSelect(ref useFallbackY, ref hingeAxisA, ref hingeAxisBOnPlaneY, out hingeAxisBOnPlaneY);
+            Vector3Wide.ConditionalSelect(useFallbackX, hingeAxisA, hingeAxisBOnPlaneX, out hingeAxisBOnPlaneX);
+            Vector3Wide.ConditionalSelect(useFallbackY, hingeAxisA, hingeAxisBOnPlaneY, out hingeAxisBOnPlaneY);
 
             Vector3Wide.Dot(ref hingeAxisBOnPlaneX, ref hingeAxisA, out var hbxha);
             Vector3Wide.Dot(ref hingeAxisBOnPlaneY, ref hingeAxisA, out var hbyha);

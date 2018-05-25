@@ -89,7 +89,7 @@ namespace BepuUtilities
         {
             //Current implementation of cross far from optimal without shuffles. This assumes it'll eventually be accelerated.
             Vector3 cross;
-            Vector3x.Cross(ref Y, ref Z, out cross);
+            Vector3x.Cross(Y, Z, out cross);
             return Vector3.Dot(X, cross);
         }
 
@@ -103,10 +103,9 @@ namespace BepuUtilities
         {
             //Current implementation of cross far from optimal without shuffles, and even then this has some room for improvement.
             //Inverts should be really rare, so it's not too concerning. Use the scalar version when possible until ryujit improves (and we improve this implementation).
-            Vector3 yz, zx, xy;
-            Vector3x.Cross(ref m.Y, ref m.Z, out yz);
-            Vector3x.Cross(ref m.Z, ref m.X, out zx);
-            Vector3x.Cross(ref m.X, ref m.Y, out xy);
+            Vector3x.Cross(m.Y, m.Z, out var yz);
+            Vector3x.Cross(m.Z, m.X, out var zx);
+            Vector3x.Cross(m.X, m.Y, out var xy);
             var inverseDeterminant = 1f / Vector3.Dot(m.X, yz);
             inverse.X = yz * inverseDeterminant;
             inverse.Y = zx * inverseDeterminant;
@@ -163,7 +162,7 @@ namespace BepuUtilities
         /// <param name="m">Matrix to use as the transformation.</param>
         /// <param name="result">Product of the transformation.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Transform(ref Vector3 v, ref Matrix3x3 m, out Vector3 result)
+        public static void Transform(in Vector3 v, in Matrix3x3 m, out Vector3 result)
         {
             var x = new Vector3(v.X);
             var y = new Vector3(v.Y);
@@ -178,7 +177,7 @@ namespace BepuUtilities
         /// <param name="m">Matrix to use as the transformation transpose.</param>
         /// <param name="result">Product of the transformation.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void TransformTranspose(in Vector3 v, ref Matrix3x3 m, out Vector3 result)
+        public static void TransformTranspose(in Vector3 v, in Matrix3x3 m, out Vector3 result)
         {
             result = new Vector3(
                 Vector3.Dot(v, m.X),
@@ -332,7 +331,7 @@ namespace BepuUtilities
         /// <param name="angle">Angle of the rotation.</param>
         /// <param name="result">Resulting rotation matrix.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void CreateFromAxisAngle(ref Vector3 axis, float angle, out Matrix3x3 result)
+        public static void CreateFromAxisAngle(in Vector3 axis, float angle, out Matrix3x3 result)
         {
             //TODO: Could be better simdified.
             float xx = axis.X * axis.X;
@@ -359,7 +358,7 @@ namespace BepuUtilities
                 axis.Y * sinAngle + oneMinusCosAngle * xz,
                 -axis.X * sinAngle + oneMinusCosAngle * yz,
                 1 + oneMinusCosAngle * (zz - 1));
-            
+
         }
 
         /// <summary>
@@ -371,7 +370,7 @@ namespace BepuUtilities
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Matrix3x3 CreateFromAxisAngle(Vector3 axis, float angle)
         {
-            CreateFromAxisAngle(ref axis, angle, out var result);
+            CreateFromAxisAngle(axis, angle, out var result);
             return result;
 
         }
