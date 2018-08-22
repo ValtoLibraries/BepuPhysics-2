@@ -105,19 +105,29 @@ namespace BepuPhysics.CollisionDetection
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        unsafe static void UseContact(ref QuickList<Int2, Buffer<Int2>> remainingChildren, int index, ref Buffer<NonconvexReductionChild> children, NonconvexContactManifold* targetManifold)
+        unsafe static void AddContact(ref NonconvexReductionChild child, int contactIndexInChild, NonconvexContactManifold* targetManifold)
         {
-            ref var childIndex = ref remainingChildren[index];
-            ref var child = ref children[childIndex.X];
-            ref var contact = ref Unsafe.Add(ref child.Manifold.Contact0, childIndex.Y);
+            ref var contact = ref Unsafe.Add(ref child.Manifold.Contact0, contactIndexInChild);
             ref var target = ref NonconvexContactManifold.Allocate(targetManifold);
             target.Offset = contact.Offset;
             target.Normal = child.Manifold.Normal;
             //Mix the convex-generated feature id with the child indices.
             target.FeatureId = contact.FeatureId ^ ((child.ChildIndexA << 8) ^ (child.ChildIndexB << 16));
             target.Depth = contact.Depth;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        unsafe static void UseContact(ref QuickList<Int2, Buffer<Int2>> remainingChildren, int index, ref Buffer<NonconvexReductionChild> children, NonconvexContactManifold* targetManifold)
+        {
+            ref var childIndex = ref remainingChildren[index];
+            ref var child = ref children[childIndex.X];
+            AddContact(ref children[childIndex.X], childIndex.Y, targetManifold);
             remainingChildren.FastRemoveAt(index);
         }
+        /// <summary>
+        /// The maximum number of contacts that can exist within a nonconvex manifold.
+        /// </summary>
+        const int MaximumContactCount = 4;
         unsafe void ChooseMostConstraining(NonconvexContactManifold* manifold, BufferPool pool)
         {
             //The end goal of contact reduction is to choose a reasonably stable subset of contacts which offer the greatest degree of constraint.
@@ -126,88 +136,88 @@ namespace BepuPhysics.CollisionDetection
             //2) Search for the contact in the unadded set which maximizes the constraint heuristic and add it. Remove it from the unadded set.
             //3) Repeat #2 until there is no room left in the reduced manifold or all remaining candidates are redundant with the reduced manifold.
 
-            //For the initial selection, we'll choose the deepest contact if the choice is unambiguous between contact manifolds.
-            //If two or more manifolds have similar maximum depths, we'll instead pick the contact whose position is furthest along the direction (-1, -1, -1).
-            float deepestManifoldDepth = -float.MaxValue;
-            int deepestManifoldIndex = 0;
-            float secondDeepestManifoldDepth = -float.MaxValue;
+            //We first compute some calibration data. Knowing the approximate center of the manifold and the maximum distance allows more informed thresholds.
+
+            var extentAxis = new Vector3(0.280454652f, 0.55873544499f, 0.7804869574f);
             float minimumExtent = float.MaxValue;
+            Vector3 minimumExtentPosition = default;
+            for (int i = 0; i < ChildCount; ++i)
+            {
+                ref var child = ref Children[i];
+                for (int j = 0; j < child.Manifold.Count; ++j)
+                {
+                    ref var position = ref Unsafe.Add(ref child.Manifold.Contact0, j).Offset;
+                    var extent = Vector3.Dot(position, extentAxis);
+                    if(extent < minimumExtent)
+                    {
+                        minimumExtent = extent;
+                        minimumExtentPosition = position;
+                    }
+                }
+            }
             float maximumDistanceSquared = 0;
-            int minimumExtentIndex = -1;
+            for (int i = 0; i < ChildCount; ++i)
+            {
+                ref var child = ref Children[i];
+                for (int j = 0; j < child.Manifold.Count; ++j)
+                {
+                    var distanceSquared = (Unsafe.Add(ref child.Manifold.Contact0, j).Offset - minimumExtentPosition).LengthSquared();
+                    if (distanceSquared > maximumDistanceSquared)
+                        maximumDistanceSquared = distanceSquared;
+                }
+            }
+            var maximumDistance = (float)Math.Sqrt(maximumDistanceSquared);
+            float initialBestScore = -float.MaxValue;
+            int initialBestScoreIndex = 0;
             QuickList<Int2, Buffer<Int2>>.Create(pool.SpecializeFor<Int2>(), ChildCount * 4, out var remainingChildren);
+            //To reliably break the tie between multiple contacts in the same location (which often happens on triangle meshes), add a little bit extra to later contacts.
+            //Not enough to significantly change the outcome under any circumstance- just enough to avoid swapping between two numerically near-identical starting points over and over.
+            var biasPerIndex = maximumDistance * 1e-5f;
+            var extremityScale = maximumDistance * 1e-4f;
             for (int i = 0; i < ChildCount; ++i)
             {
                 ref var child = ref Children[i];
                 ref var childContactsBase = ref child.Manifold.Contact0;
-                var deepestDepthInManifold = -float.MaxValue;
-                var deepestIndexInManifold = 0;
                 for (int j = 0; j < child.Manifold.Count; ++j)
                 {
                     ref var contact = ref Unsafe.Add(ref childContactsBase, j);
-                    if (contact.Depth > deepestDepthInManifold)
-                    {
-                        deepestDepthInManifold = contact.Depth;
-                        deepestIndexInManifold = remainingChildren.Count;
-                    }
-                    //Go ahead and apply the child's offset to the contact position, since we're going to be working in the parent's space.
-                    contact.Offset = contact.Offset + child.OffsetA;
                     //Note that we only consider 'extreme' contacts that have positive depth to avoid selecting purely speculative contacts as a starting point.
                     //If there are no contacts with positive depth, it's fine to just rely on the 'deepest' speculative contact. 
                     //Feature id stability doesn't matter much if there is no stable contact.
+                    float candidateScore;
                     if (contact.Depth >= 0)
                     {
-                        var extent = contact.Offset.X + contact.Offset.Y + contact.Offset.Y;
-                        if (extent < minimumExtent)
-                        {
-                            minimumExtent = extent;
-                            minimumExtentIndex = remainingChildren.Count;
-                        }
+                        //Note that we assume that the contact offsets have already been moved into the parent's space in compound pairs so that we can validly compare extents across manifolds.
+                        var extent = Vector3.Dot(contact.Offset, extentAxis) - minimumExtent;
+                        candidateScore = contact.Depth + extent * extremityScale + remainingChildren.Count * biasPerIndex;
                     }
-                    //Note that we maintain distance and manifold extent separately; distance is more likely to have multiple competing contacts due to the lack of 
-                    //directionality, but it provides a correlate of scale at least as good as extent.
-                    var distanceSquared = contact.Offset.LengthSquared();
-                    if (distanceSquared > maximumDistanceSquared)
-                        maximumDistanceSquared = distanceSquared;
+                    else
+                    {
+                        //Speculative contact scores are simply based on depth.
+                        candidateScore = contact.Depth;
+                    }
+                    if (candidateScore > initialBestScore)
+                    {
+                        initialBestScore = candidateScore;
+                        initialBestScoreIndex = remainingChildren.Count;
+                    }
                     ref var indices = ref remainingChildren.AllocateUnsafely();
                     indices.X = i;
                     indices.Y = j;
-                }
-                if (deepestDepthInManifold > deepestManifoldDepth)
-                {
-                    secondDeepestManifoldDepth = deepestManifoldDepth;
-                    deepestManifoldDepth = deepestDepthInManifold;
-                    deepestManifoldIndex = deepestIndexInManifold;
-                }
-                else if (deepestDepthInManifold > secondDeepestManifoldDepth)
-                {
-                    secondDeepestManifoldDepth = deepestDepthInManifold;
                 }
             }
 
             Debug.Assert(remainingChildren.Count > 0, "This function should only be called when there are populated manifolds.");
 
-            //We use the maximum contact distance as a basis of the depth vs. extent threshold.
-            //(The sqrt is just for simplicity- this will be used later in the incremental contact add, and dealing with squares there is more complicated.)
-            var maximumDistance = (float)Math.Sqrt(maximumDistanceSquared);
-            if (minimumExtentIndex < 0 || deepestManifoldDepth - secondDeepestManifoldDepth > maximumDistance * 1e-3f)
-            {
-                //The depths are reasonably distinct and should be stable enough to use as a starting point, at least for a few frames.
-                //(Or there were no contacts with positive depth, so there is no 'extreme' fallback.)
-                UseContact(ref remainingChildren, deepestManifoldIndex, ref Children, manifold);
-            }
-            else
-            {
-                //Use the extreme point as a starting point.
-                UseContact(ref remainingChildren, minimumExtentIndex, ref Children, manifold);
-            }
+            UseContact(ref remainingChildren, initialBestScoreIndex, ref Children, manifold);
 
             //We now have a decent starting point. Now, incrementally search for contacts which expand the manifold as much as possible.
             //This is going to be a greedy and nonoptimal search, but being consistent and good enough is more important than true optimality.
 
             //TODO: This could be significantly optimized. Many approximations would get 95% of the benefit, and even the full version could be vectorized in a few different ways.
-            var depthScale = 5f / maximumDistance;
+            var depthScale = 15f / maximumDistance;
             var reducedContacts = &manifold->Contact0;
-            while (remainingChildren.Count > 0 && manifold->Count < 4)
+            while (remainingChildren.Count > 0 && manifold->Count < MaximumContactCount)
             {
                 float bestScore = -1;
                 int bestScoreIndex = 0;
@@ -221,11 +231,9 @@ namespace BepuPhysics.CollisionDetection
                     ref var contact = ref Unsafe.Add(ref child.Manifold.Contact0, childIndex.Y);
                     //We give contacts of higher depth greater impulses, so they'll tend to be chosen over low depth contacts.
                     var scaledDepth = contact.Depth * depthScale;
-                    //Depth is not the only thing to consider, though, so limit its influence.
+                    //Don't let speculative contacts wrap around into larger impulses.
                     if (scaledDepth < -1)
                         scaledDepth = -1;
-                    if (scaledDepth > 1)
-                        scaledDepth = 1;
                     Vector3 linear = (-1 - scaledDepth) * child.Manifold.Normal;
                     Vector3x.Cross(contact.Offset, linear, out var angular);
                     for (int i = 0; i < manifold->Count; ++i)
@@ -243,6 +251,9 @@ namespace BepuPhysics.CollisionDetection
                         }
                     }
                     var score = linear.LengthSquared() + angular.LengthSquared();
+                    //Heavily penalize speculative contacts. They can sometimes be worth it, but active contacts are almost always the priority unless they're redundant.
+                    if (contact.Depth < 0)
+                        score *= 0.2f;
                     if (score > bestScore)
                     {
                         bestScore = score;
@@ -257,10 +268,9 @@ namespace BepuPhysics.CollisionDetection
             remainingChildren.Dispose(pool.SpecializeFor<Int2>());
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        unsafe void FlushIfCompleted<TCallbacks>(int pairId, ref CollisionBatcher<TCallbacks> batcher) where TCallbacks : struct, ICollisionCallbacks
+        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe void Flush<TCallbacks>(int pairId, ref CollisionBatcher<TCallbacks> batcher) where TCallbacks : struct, ICollisionCallbacks
         {
-            ++CompletedChildCount;
             Debug.Assert(ChildCount > 0);
             if (ChildCount == CompletedChildCount)
             {
@@ -268,15 +278,25 @@ namespace BepuPhysics.CollisionDetection
                 int populatedChildManifolds = 0;
                 //We cache an index in case there is only one populated manifold. Order of discovery doesn't matter- this value only gets used when there's one manifold.
                 int samplePopulatedChildIndex = 0;
+                int totalContactCount = 0;
                 for (int i = 0; i < ChildCount; ++i)
                 {
-                    if (Children[i].Manifold.Count > 0)
+                    ref var child = ref Children[i];
+                    var childManifoldCount = child.Manifold.Count;
+                    if (childManifoldCount > 0)
                     {
+                        totalContactCount += childManifoldCount;
                         ++populatedChildManifolds;
                         samplePopulatedChildIndex = i;
+                        for (int j = 0; j < child.Manifold.Count; ++j)
+                        {
+                            //Push all contacts into the space of the parent object.
+                            Unsafe.Add(ref child.Manifold.Contact0, j).Offset += child.OffsetA;
+                        }
                     }
                 }
                 var sampleChild = (NonconvexReductionChild*)Children.Memory + samplePopulatedChildIndex;
+
                 if (populatedChildManifolds > 1)
                 {
                     //There are multiple contributing child manifolds, so just assume that the resulting manifold is going to be nonconvex.
@@ -284,9 +304,25 @@ namespace BepuPhysics.CollisionDetection
                     //We should assume that the stack memory backing the reduced manifold is uninitialized. We rely on the count, so initialize it manually.
                     reducedManifold.Count = 0;
 
-                    //ChooseBadly(&reducedManifold);
-                    //ChooseDeepest(&reducedManifold);
-                    ChooseMostConstraining(&reducedManifold, batcher.Pool);
+                    if (totalContactCount <= MaximumContactCount)
+                    {
+                        //No reduction required; we can fit every contact.
+                        //TODO: If you have any redundant contact removal, you'd have to do it before running this.
+                        for (int i = 0; i < ChildCount; ++i)
+                        {
+                            ref var child = ref Children[i];
+                            for (int j = 0; j < child.Manifold.Count; ++j)
+                            {
+                                AddContact(ref child, j, &reducedManifold);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        //ChooseBadly(&reducedManifold);
+                        //ChooseDeepest(&reducedManifold);
+                        ChooseMostConstraining(&reducedManifold, batcher.Pool);
+                    }
 
                     //The manifold offsetB is the offset from shapeA origin to shapeB origin.
                     reducedManifold.OffsetB = sampleChild->Manifold.OffsetB - sampleChild->OffsetB + sampleChild->OffsetA;
@@ -301,11 +337,6 @@ namespace BepuPhysics.CollisionDetection
                     //and that we can only hit this codepath if all manifolds are empty, reporting manifold 0 is perfectly fine.
                     //The manifold offsetB is the offset from shapeA origin to shapeB origin.
                     sampleChild->Manifold.OffsetB = sampleChild->Manifold.OffsetB - sampleChild->OffsetB + sampleChild->OffsetA;
-                    var contacts = &sampleChild->Manifold.Contact0;
-                    for (int i = 0; i < sampleChild->Manifold.Count; ++i)
-                    {
-                        contacts[i].Offset += sampleChild->OffsetA;
-                    }
                     batcher.Callbacks.OnPairCompleted(pairId, &sampleChild->Manifold);
                 }
                 batcher.Pool.ReturnUnsafely(Children.Id);
@@ -315,17 +346,29 @@ namespace BepuPhysics.CollisionDetection
 #endif
             }
         }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public unsafe void OnChildCompleted<TCallbacks>(ref PairContinuation report, ConvexContactManifold* manifold, ref CollisionBatcher<TCallbacks> batcher)
             where TCallbacks : struct, ICollisionCallbacks
         {
             Children[report.ChildIndex].Manifold = *manifold;
-            FlushIfCompleted(report.PairId, ref batcher);
+            ++CompletedChildCount;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void OnChildCompletedEmpty<TCallbacks>(ref PairContinuation report, ref CollisionBatcher<TCallbacks> batcher) where TCallbacks : struct, ICollisionCallbacks
         {
             Children[report.ChildIndex].Manifold.Count = 0;
-            FlushIfCompleted(report.PairId, ref batcher);
+            ++CompletedChildCount;
+        }
+
+        public bool TryFlush<TCallbacks>(int pairId, ref CollisionBatcher<TCallbacks> batcher) where TCallbacks : struct, ICollisionCallbacks
+        {
+            if (CompletedChildCount == ChildCount)
+            {
+                Flush(pairId, ref batcher);
+                return true;
+            }
+            return false;
         }
     }
 }

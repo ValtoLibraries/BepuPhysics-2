@@ -19,14 +19,14 @@ namespace BepuPhysics.Trees
     /// <summary>
     /// Ray representation designed for quicker intersection against axis aligned bounding boxes.
     /// </summary>
-    struct TreeRay
+    public struct TreeRay
     {
         public Vector3 OriginOverDirection;
         public float MaximumT;
         public Vector3 InverseDirection;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void CreateFrom(in Vector3 origin, in Vector3 direction, float maximumT, out TreeRay treeRay)
+        public static void CreateFrom(in Vector3 origin, in Vector3 direction, float maximumT, out TreeRay treeRay)
         {
             //Note that this division has two odd properties:
             //1) If the local direction has a near zero component, it is clamped to a nonzero but extremely small value. This is a hack, but it works reasonably well.
@@ -40,7 +40,7 @@ namespace BepuPhysics.Trees
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void CreateFrom(in Vector3 origin, in Vector3 direction, float maximumT, int id, out RayData rayData, out TreeRay treeRay)
+        public static void CreateFrom(in Vector3 origin, in Vector3 direction, float maximumT, int id, out RayData rayData, out TreeRay treeRay)
         {
             rayData.Origin = origin;
             rayData.Id = id;
@@ -247,7 +247,7 @@ namespace BepuPhysics.Trees
 
             tMin = Vector.Max(Vector.Max(Vector<float>.Zero, tMinX), Vector.Max(tMinY, tMinZ));
             var tMax = Vector.Min(Vector.Min(ray.MaximumT, tMaxX), Vector.Min(tMaxY, tMaxZ));
-            intersected = Vector.LessThan(tMin, tMax);
+            intersected = Vector.LessThanOrEqual(tMin, tMax);
         }
 
 
@@ -414,7 +414,7 @@ namespace BepuPhysics.Trees
         /// Tests any batched rays against the given tree.
         /// </summary>
         /// <param name="tree">Tree to test the accumulated rays against.</param>
-        public unsafe void TestRays<TLeafTester>(Tree tree, ref TLeafTester leafTester) where TLeafTester : IBatchedRayLeafTester
+        public unsafe void TestRays<TLeafTester>(ref Tree tree, ref TLeafTester leafTester) where TLeafTester : IBatchedRayLeafTester
         {
             Debug.Assert(stackPointerA0 == 0 && stackPointerB == 0 && stackPointerA1 == 0 && stackPointer == 0,
                 "At the beginning of the traversal, there should exist no entries on the traversal stack.");

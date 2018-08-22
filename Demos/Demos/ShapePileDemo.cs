@@ -8,12 +8,13 @@ using System.Numerics;
 using System.Diagnostics;
 using BepuUtilities.Memory;
 using BepuUtilities.Collections;
+using DemoContentLoader;
 
 namespace Demos.Demos
 {
     public class ShapePileDemo : Demo
     {
-        public unsafe override void Initialize(Camera camera)
+        public unsafe override void Initialize(ContentArchive content, Camera camera)
         {
             camera.Position = new Vector3(-30, 10, -30);
             //camera.Yaw = MathHelper.Pi ; 
@@ -27,7 +28,6 @@ namespace Demos.Demos
             box.ComputeInertia(1, out var boxInertia);
             capsule.ComputeInertia(1, out var capsuleInertia);
             sphere.ComputeInertia(1, out var sphereInertia);
-            //capsuleInertia.InverseInertiaTensor = new Triangular3x3();
             var boxIndex = Simulation.Shapes.Add(box);
             var capsuleIndex = Simulation.Shapes.Add(capsule);
             var sphereIndex = Simulation.Shapes.Add(sphere);
@@ -70,7 +70,7 @@ namespace Demos.Demos
                                 bodyDescription.LocalInertia = sphereInertia;
                                 break;
                         }
-                        Simulation.Bodies.Add(ref bodyDescription);
+                        Simulation.Bodies.Add(bodyDescription);
 
                     }
                 }
@@ -107,7 +107,7 @@ namespace Demos.Demos
                             //Orientation = BepuUtilities.Quaternion.CreateFromAxisAngle(Vector3.Normalize(new Vector3(0, 0, 1)), MathHelper.Pi)
                         }
                     };
-                    Simulation.Statics.Add(ref staticDescription);
+                    Simulation.Statics.Add(staticDescription);
                 }
             }
 

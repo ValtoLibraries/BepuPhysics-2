@@ -43,7 +43,7 @@ namespace BepuPhysics
         /// Note that this can only affect determinism locally- different processor architectures may implement instructions differently.
         /// </summary>
         public bool Deterministic { get; set; }
-
+        
         protected Simulation(BufferPool bufferPool, SimulationAllocationSizes initialAllocationSizes)
         {
             BufferPool = bufferPool;
@@ -112,7 +112,7 @@ namespace BepuPhysics
 
 
 
-        private int ValidateAndCountShapefulBodies(ref BodySet bodySet, Tree tree, ref Buffer<CollidableReference> leaves)
+        private int ValidateAndCountShapefulBodies(ref BodySet bodySet, ref Tree tree, ref Buffer<CollidableReference> leaves)
         {
             int shapefulBodyCount = 0;
             for (int i = 0; i < bodySet.Count; ++i)
@@ -135,7 +135,7 @@ namespace BepuPhysics
         [Conditional("DEBUG")]
         internal void ValidateCollidables()
         {
-            var activeShapefulBodyCount = ValidateAndCountShapefulBodies(ref Bodies.ActiveSet, BroadPhase.ActiveTree, ref BroadPhase.activeLeaves);
+            var activeShapefulBodyCount = ValidateAndCountShapefulBodies(ref Bodies.ActiveSet, ref BroadPhase.ActiveTree, ref BroadPhase.activeLeaves);
             Debug.Assert(BroadPhase.ActiveTree.LeafCount == activeShapefulBodyCount);
 
             int inactiveShapefulBodyCount = 0;
@@ -145,7 +145,7 @@ namespace BepuPhysics
                 ref var set = ref Bodies.Sets[setIndex];
                 if (set.Allocated)
                 {
-                    inactiveShapefulBodyCount += ValidateAndCountShapefulBodies(ref set, BroadPhase.StaticTree, ref BroadPhase.staticLeaves);
+                    inactiveShapefulBodyCount += ValidateAndCountShapefulBodies(ref set, ref BroadPhase.StaticTree, ref BroadPhase.staticLeaves);
                 }
             }
             Debug.Assert(inactiveShapefulBodyCount + Statics.Count == BroadPhase.StaticTree.LeafCount);
@@ -194,7 +194,7 @@ namespace BepuPhysics
             ProfilerStart(Sleeper);
             Sleeper.Update(threadDispatcher, Deterministic);
             ProfilerEnd(Sleeper);
-            
+
             //Note that pose integrator comes before collision detection and solving. This is a shift from v1, where collision detection went first.
             //This is a tradeoff:
             //1) Any externally set velocities will be integrated without input from the solver. The v1-style external velocity control won't work as well-
@@ -220,9 +220,9 @@ namespace BepuPhysics
             ProfilerStart(BroadPhase);
             BroadPhase.Update(threadDispatcher);
             ProfilerEnd(BroadPhase);
-
+            
             ProfilerStart(BroadPhaseOverlapFinder);
-            BroadPhaseOverlapFinder.DispatchOverlaps(threadDispatcher);
+            BroadPhaseOverlapFinder.DispatchOverlaps(dt, threadDispatcher);
             ProfilerEnd(BroadPhaseOverlapFinder);
             
             ProfilerStart(NarrowPhase);
@@ -245,15 +245,15 @@ namespace BepuPhysics
             else
                 BodyLayoutOptimizer.IncrementalOptimize(BufferPool, threadDispatcher);
             ProfilerEnd(BodyLayoutOptimizer);
-
+            
             ProfilerStart(ConstraintLayoutOptimizer);
             ConstraintLayoutOptimizer.Update(BufferPool, threadDispatcher);
             ProfilerEnd(ConstraintLayoutOptimizer);
-
+            
             ProfilerStart(SolverBatchCompressor);
             SolverBatchCompressor.Compress(BufferPool, threadDispatcher, threadDispatcher != null && Deterministic);
             ProfilerEnd(SolverBatchCompressor);
-
+            
             ProfilerEnd(this);
         }
 

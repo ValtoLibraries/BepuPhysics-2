@@ -7,6 +7,7 @@ using SharpDX.DXGI;
 using System;
 using DemoRenderer.ShapeDrawing;
 using DemoRenderer.Constraints;
+using BepuUtilities.Memory;
 
 namespace DemoRenderer
 {
@@ -20,6 +21,8 @@ namespace DemoRenderer
         public RayTracedRenderer<SphereInstance> SphereRenderer { get; private set; }
         public RayTracedRenderer<CapsuleInstance> CapsuleRenderer { get; private set; }
         public BoxRenderer BoxRenderer { get; private set; }
+        public TriangleRenderer TriangleRenderer { get; private set; }
+        public MeshRenderer MeshRenderer { get; private set; }
         public ShapesExtractor Shapes { get; private set; }
         public LineRenderer LineRenderer { get; private set; }
         public LineExtractor Lines { get; private set; }
@@ -32,6 +35,7 @@ namespace DemoRenderer
 
 
         ParallelLooper looper;
+        BufferPool pool;
 
         Texture2D depthBuffer;
         DepthStencilView dsv;
@@ -60,10 +64,13 @@ namespace DemoRenderer
             {
                 ShaderCache = ShaderCache.Load(stream);
             }
-            Shapes = new ShapesExtractor(looper);
+            pool = new BufferPool();
+            Shapes = new ShapesExtractor(Surface.Device, looper, pool);
             SphereRenderer = new RayTracedRenderer<SphereInstance>(surface.Device, ShaderCache, @"ShapeDrawing\RenderSpheres.hlsl");
             CapsuleRenderer = new RayTracedRenderer<CapsuleInstance>(surface.Device, ShaderCache, @"ShapeDrawing\RenderCapsules.hlsl");
             BoxRenderer = new BoxRenderer(surface.Device, ShaderCache);
+            TriangleRenderer = new TriangleRenderer(surface.Device, ShaderCache);
+            MeshRenderer = new MeshRenderer(surface.Device, Shapes.MeshCache, ShaderCache);
             Lines = new LineExtractor(looper);
             LineRenderer = new LineRenderer(surface.Device, ShaderCache);
             Background = new BackgroundRenderer(surface.Device, ShaderCache);
@@ -205,6 +212,8 @@ namespace DemoRenderer
                 OnResize();
             }
             var context = Surface.Context;
+            Shapes.MeshCache.FlushPendingUploads(context);
+
             context.Rasterizer.SetViewport(0, 0, Surface.Resolution.X, Surface.Resolution.Y, 0.0f, 1.0f);
 
             //Note reversed depth.
@@ -222,6 +231,8 @@ namespace DemoRenderer
             //Non-raytraced shapes just use regular opaque rendering.
             context.OutputMerger.SetBlendState(opaqueBlendState);
             BoxRenderer.Render(context, camera, Surface.Resolution, Shapes.boxes.Span.Memory, 0, Shapes.boxes.Count);
+            TriangleRenderer.Render(context, camera, Surface.Resolution, Shapes.triangles.Span.Memory, 0, Shapes.triangles.Count);
+            MeshRenderer.Render(context, camera, Surface.Resolution, Shapes.meshes.Span.Memory, 0, Shapes.meshes.Count);
             LineRenderer.Render(context, camera, Surface.Resolution, Lines.lines.Span.Memory, 0, Lines.lines.Count);
 
             Background.Render(context, camera);
@@ -256,6 +267,9 @@ namespace DemoRenderer
 
                 SphereRenderer.Dispose();
                 CapsuleRenderer.Dispose();
+                BoxRenderer.Dispose();
+                TriangleRenderer.Dispose();
+                MeshRenderer.Dispose();
 
                 UILineRenderer.Dispose();
                 GlyphRenderer.Dispose();
@@ -274,6 +288,8 @@ namespace DemoRenderer
                 a2cBlendState.Dispose();
                 uiDepthState.Dispose();
                 uiBlendState.Dispose();
+
+                Shapes.Dispose();
             }
         }
 

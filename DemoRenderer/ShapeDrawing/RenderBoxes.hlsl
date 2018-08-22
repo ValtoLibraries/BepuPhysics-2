@@ -2,18 +2,7 @@
 vs
 ps
 [META]*/
-#include "Common.hlsl"
-cbuffer VertexConstants : register(b0)
-{
-	float4x4 Projection;
-	float3 CameraPosition;
-	float Padding0;
-	float3 CameraRight;
-	float Padding1;
-	float3 CameraUp;
-	float Padding2;
-	float3 CameraBackward;
-};
+#include "RasterizedCommon.hlsl"
 
 struct Instance
 {
@@ -26,14 +15,6 @@ struct Instance
 
 StructuredBuffer<Instance> Instances : register(t0);
 
-struct PSInput
-{
-	float4 Position : SV_Position;
-	float3 ToAABB : RayDirection;
-	nointerpolation float3 InstancePosition : Position;
-	nointerpolation uint PackedColor : PackedColor;
-	nointerpolation float4 Orientation : Orientation;
-};
 PSInput VSMain(uint vertexId : SV_VertexId)
 {
 	//The vertex id is used to position each vertex. 

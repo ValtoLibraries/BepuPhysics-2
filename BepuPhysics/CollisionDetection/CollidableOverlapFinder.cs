@@ -11,7 +11,7 @@ namespace BepuPhysics.CollisionDetection
 {
     public abstract class CollidableOverlapFinder
     {
-        public abstract void DispatchOverlaps(IThreadDispatcher threadDispatcher = null);
+        public abstract void DispatchOverlaps(float dt, IThreadDispatcher threadDispatcher = null);
     }
 
     //The overlap finder requires type knowledge about the narrow phase that the broad phase lacks. Don't really want to infect the broad phase with a bunch of narrow phase dependent 
@@ -101,9 +101,9 @@ namespace BepuPhysics.CollisionDetection
             worker.Batcher.Flush();
         }
 
-        public override void DispatchOverlaps(IThreadDispatcher threadDispatcher = null)
+        public override void DispatchOverlaps(float dt, IThreadDispatcher threadDispatcher = null)
         {
-            narrowPhase.Prepare(threadDispatcher);
+            narrowPhase.Prepare(dt, threadDispatcher);
             if (threadDispatcher != null)
             {
                 if (intertreeHandlers == null || intertreeHandlers.Length < threadDispatcher.ThreadCount)
@@ -124,8 +124,8 @@ namespace BepuPhysics.CollisionDetection
                     intertreeHandlers[i] = new IntertreeOverlapHandler(broadPhase.activeLeaves, broadPhase.staticLeaves, narrowPhase, i);
                 }
                 Debug.Assert(intertreeHandlers.Length >= threadDispatcher.ThreadCount);
-                selfTestContext.PrepareJobs(broadPhase.ActiveTree, selfHandlers, threadDispatcher.ThreadCount);
-                intertreeTestContext.PrepareJobs(broadPhase.ActiveTree, broadPhase.StaticTree, intertreeHandlers, threadDispatcher.ThreadCount);
+                selfTestContext.PrepareJobs(ref broadPhase.ActiveTree, selfHandlers, threadDispatcher.ThreadCount);
+                intertreeTestContext.PrepareJobs(ref broadPhase.ActiveTree, ref broadPhase.StaticTree, intertreeHandlers, threadDispatcher.ThreadCount);
                 nextJobIndex = -1;
                 threadDispatcher.DispatchWorkers(workerAction);
                 selfTestContext.CompleteSelfTest();
@@ -136,7 +136,7 @@ namespace BepuPhysics.CollisionDetection
                 var selfTestHandler = new SelfOverlapHandler(broadPhase.activeLeaves, narrowPhase, 0);
                 broadPhase.ActiveTree.GetSelfOverlaps(ref selfTestHandler);
                 var intertreeHandler = new IntertreeOverlapHandler(broadPhase.activeLeaves, broadPhase.staticLeaves, narrowPhase, 0);
-                broadPhase.ActiveTree.GetOverlaps(broadPhase.StaticTree, ref intertreeHandler);
+                broadPhase.ActiveTree.GetOverlaps(ref broadPhase.StaticTree, ref intertreeHandler);
                 ref var worker = ref narrowPhase.overlapWorkers[0];
                 worker.Batcher.Flush();
 

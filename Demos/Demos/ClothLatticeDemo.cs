@@ -9,12 +9,13 @@ using System.Diagnostics;
 using BepuUtilities.Memory;
 using BepuUtilities.Collections;
 using BepuPhysics.Constraints;
+using DemoContentLoader;
 
 namespace Demos.Demos
 {
     public class ClothLatticeDemo : Demo
     {
-        public unsafe override void Initialize(Camera camera)
+        public unsafe override void Initialize(ContentArchive content, Camera camera)
         {
             camera.Position = new Vector3(-120, 30, -120);
             camera.Yaw = MathHelper.Pi * 3f / 4;
@@ -52,7 +53,7 @@ namespace Demos.Demos
                         },
                         LocalInertia = clothNodeInertia
                     };
-                    nodeHandles[i][j] = Simulation.Bodies.Add(ref bodyDescription);
+                    nodeHandles[i][j] = Simulation.Bodies.Add(bodyDescription);
 
                 }
             }
@@ -112,7 +113,7 @@ namespace Demos.Demos
                     Orientation = BepuUtilities.Quaternion.Identity
                 }
             };
-            Simulation.Statics.Add(ref bigBallDescription);
+            Simulation.Statics.Add(bigBallDescription);
 
             var groundShape = new Box(200, 1, 200);
             var groundShapeIndex = Simulation.Shapes.Add(groundShape);
@@ -131,7 +132,7 @@ namespace Demos.Demos
                     Orientation = BepuUtilities.Quaternion.Identity
                 }
             };
-            Simulation.Statics.Add(ref groundDescription);
+            Simulation.Statics.Add(groundDescription);
         }
 
     }

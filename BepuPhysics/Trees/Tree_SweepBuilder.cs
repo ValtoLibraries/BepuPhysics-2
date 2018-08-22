@@ -1,14 +1,15 @@
 ﻿using BepuUtilities;
 using BepuUtilities.Collections;
+using BepuUtilities.Memory;
 using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Numerics;
-
+using System.Runtime.CompilerServices;
 
 namespace BepuPhysics.Trees
 {
-    partial class Tree
+    partial struct Tree
     {
         internal unsafe struct SweepResources
         {
@@ -21,6 +22,19 @@ namespace BepuPhysics.Trees
             public float* CentroidsY;
             public float* CentroidsZ;
             public BoundingBox* Merged;
+        }
+
+        unsafe struct IndexMapComparer : IComparerRef<int>
+        {
+            public float* Centroids;
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public int Compare(ref int a, ref int b)
+            {
+                var centroidA = Centroids[a];
+                var centroidB = Centroids[b];
+                return centroidA.CompareTo(centroidB);
+            }
         }
 
 
@@ -37,8 +51,8 @@ namespace BepuPhysics.Trees
             //With those changes, we can probably get the sweep builder to be faster than v1's insertion builder- it's almost there already.
             //(You'll also want to bench it against similarly simd accelerated binned approaches for use in incremental refinement. If it's not much slower, the extra quality benefits
             //might make it faster on net by virtue of speeding up self-tests, which are a dominant cost.)
-            var comparer = new PrimitiveComparer<float>();
-            QuickSort.Sort(ref centroids[0], ref indexMap[0], 0, count - 1, ref comparer);
+            var comparer = new IndexMapComparer { Centroids = centroids };
+            QuickSort.Sort(ref indexMap[0], 0, count - 1, ref comparer);
 
             //Search for the best split.
             //Sweep across from low to high, caching the merged size and leaf count at each point.
@@ -168,7 +182,8 @@ namespace BepuPhysics.Trees
             {
                 Debug.Assert(leafCountA == 1);
                 //Only one leaf. Don't create another node.
-                var leafIndex = AddLeaf(nodeIndex, 0);
+                var leafIndex = leaves.IndexMap[start];
+                this.leaves[leafIndex] = new Leaf(nodeIndex, 0);
                 a.Index = Encode(leafIndex);
             }
             if (leafCountB > 1)
@@ -179,7 +194,8 @@ namespace BepuPhysics.Trees
             {
                 Debug.Assert(leafCountB == 1);
                 //Only one leaf. Don't create another node.
-                var leafIndex = AddLeaf(nodeIndex, 1);
+                var leafIndex = leaves.IndexMap[splitIndex];
+                this.leaves[leafIndex] = new Leaf(nodeIndex, 1);
                 b.Index = Encode(leafIndex);
             }
         }
@@ -199,11 +215,13 @@ namespace BepuPhysics.Trees
                 var children = &nodes[nodeIndex].A;
                 for (int i = 0; i < count; ++i)
                 {
-                    var index = leaves.IndexMap[i + start];
-                    var leafIndex = AddLeaf(nodeIndex, i);
+                    //The sweep builder preallocated space for leaves and set the leafCount to match.
+                    //The index map tells us which of those original leaves to create.
+                    var leafIndex = leaves.IndexMap[i + start];
+                    this.leaves[leafIndex] = new Leaf(nodeIndex, i);
                     ref var child = ref children[i];
-                    child.Min = leaves.Bounds[index].Min;
-                    child.Max = leaves.Bounds[index].Max;
+                    child.Min = leaves.Bounds[leafIndex].Min;
+                    child.Max = leaves.Bounds[leafIndex].Max;
                     child.Index = Encode(leafIndex);
                     child.LeafCount = 1;
                 }
@@ -220,16 +238,10 @@ namespace BepuPhysics.Trees
         }
 
 
-        public unsafe void SweepBuild(BoundingBox[] leafBounds, int[] outputLeafIndices, int start = 0, int length = -1)
+        public unsafe void SweepBuild(BufferPool pool, Buffer<BoundingBox> leafBounds)
         {
-            if (length == 0)
+            if (leafBounds.Length <= 0)
                 throw new ArgumentException("Length must be positive.");
-            if (length < 0)
-                length = leafBounds.Length - start;
-            if (start + length > outputLeafIndices.Length || start + length > leafBounds.Length)
-                throw new ArgumentException("Start + length must be smaller than the leaves array lengths.");
-            if (start < 0)
-                throw new ArgumentException("Start must be nonnegative.");
             if (LeafCount != 0)
                 throw new InvalidOperationException("Cannot build a tree that already contains nodes.");
             //The tree is built with an empty node at the root to make insertion work more easily.
@@ -238,63 +250,59 @@ namespace BepuPhysics.Trees
             nodeCount = 0;
 
             //Guarantee that no resizes will occur during the build.
-            if (Leaves.Length < length)
+            if (Leaves.Length < leafBounds.Length)
             {
-                Resize(leafBounds.Length);
+                Resize(pool, leafBounds.Length);
+            }
+            leafCount = leafBounds.Length;
+
+
+            pool.Take<int>(leafBounds.Length, out var indexMap);
+            pool.Take<int>(leafBounds.Length, out var indexMapX);
+            pool.Take<int>(leafBounds.Length, out var indexMapY);
+            pool.Take<int>(leafBounds.Length, out var indexMapZ);
+            pool.Take<float>(leafBounds.Length, out var centroidsX);
+            pool.Take<float>(leafBounds.Length, out var centroidsY);
+            pool.Take<float>(leafBounds.Length, out var centroidsZ);
+            pool.SpecializeFor<BoundingBox>().Take(leafBounds.Length, out var merged);
+            SweepResources leaves;
+            leaves.Bounds = (BoundingBox*)leafBounds.Memory;
+            leaves.IndexMap = (int*)indexMap.Memory;
+            leaves.IndexMapX = (int*)indexMapX.Memory;
+            leaves.IndexMapY = (int*)indexMapY.Memory;
+            leaves.IndexMapZ = (int*)indexMapZ.Memory;
+            leaves.CentroidsX = (float*)centroidsX.Memory;
+            leaves.CentroidsY = (float*)centroidsY.Memory;
+            leaves.CentroidsZ = (float*)centroidsZ.Memory;
+            leaves.Merged = (BoundingBox*)merged.Memory;
+
+
+            for (int i = 0; i < leafBounds.Length; ++i)
+            {
+                var bounds = leaves.Bounds[i];
+                //The index map relates an index in traversal back to the original leaf location.
+                leaves.IndexMap[i] = i;
+                //Per-axis index maps don't need to be initialized here. They're filled in at the time of use.
+
+                var centroid = bounds.Min + bounds.Max;
+                centroidsX[i] = centroid.X;
+                centroidsY[i] = centroid.Y;
+                centroidsZ[i] = centroid.Z;
             }
 
-            //Gather necessary information and put it into a convenient format.
-
-            var intPool = Pool.SpecializeFor<int>();
-            var floatPool = Pool.SpecializeFor<float>();
-            intPool.Take(length, out var indexMapX);
-            intPool.Take(length, out var indexMapY);
-            intPool.Take(length, out var indexMapZ);
-            floatPool.Take(length, out var centroidsX);
-            floatPool.Take(length, out var centroidsY);
-            floatPool.Take(length, out var centroidsZ);
-            Pool.SpecializeFor<BoundingBox>().Take(length, out var merged);
-            //TODO: Would ideally use spans here, rather than assuming managed input. We could check generic type parameters to efficiently get pointers out.
-            fixed (BoundingBox* leafBoundsPointer = &leafBounds[start])
-            fixed (int* indexMapPointer = &outputLeafIndices[start])
-            {
-                SweepResources leaves;
-                leaves.Bounds = leafBoundsPointer;
-                leaves.IndexMap = indexMapPointer;
-                leaves.IndexMapX = (int*)indexMapX.Memory;
-                leaves.IndexMapY = (int*)indexMapY.Memory;
-                leaves.IndexMapZ = (int*)indexMapZ.Memory;
-                leaves.CentroidsX = (float*)centroidsX.Memory;
-                leaves.CentroidsY = (float*)centroidsY.Memory;
-                leaves.CentroidsZ = (float*)centroidsZ.Memory;
-                leaves.Merged = (BoundingBox*)merged.Memory;
-
-                for (int i = 0; i < length; ++i)
-                {
-                    var bounds = leaves.Bounds[i];
-                    leaves.IndexMap[i] = i;
-                    //Per-axis index maps don't need to be initialized here. They're filled in at the time of use.
-
-                    var centroid = bounds.Min + bounds.Max;
-                    centroidsX[i] = centroid.X;
-                    centroidsY[i] = centroid.Y;
-                    centroidsZ[i] = centroid.Z;
-                }
-
-                //Now perform a top-down sweep build.
-                CreateSweepBuilderNode(-1, -1, ref leaves, 0, length);
-
-            }
+            //Now perform a top-down sweep build.
+            CreateSweepBuilderNode(-1, -1, ref leaves, 0, leafBounds.Length);
 
 
             //Return resources.            
-            floatPool.Return(ref centroidsX);
-            floatPool.Return(ref centroidsY);
-            floatPool.Return(ref centroidsZ);
-            intPool.Return(ref indexMapX);
-            intPool.Return(ref indexMapY);
-            intPool.Return(ref indexMapZ);
-            Pool.SpecializeFor<BoundingBox>().Return(ref merged);
+            pool.ReturnUnsafely(centroidsX.Id);
+            pool.ReturnUnsafely(centroidsY.Id);
+            pool.ReturnUnsafely(centroidsZ.Id);
+            pool.ReturnUnsafely(indexMap.Id);
+            pool.ReturnUnsafely(indexMapX.Id);
+            pool.ReturnUnsafely(indexMapY.Id);
+            pool.ReturnUnsafely(indexMapZ.Id);
+            pool.SpecializeFor<BoundingBox>().Return(ref merged);
 
         }
     }

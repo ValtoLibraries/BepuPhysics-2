@@ -45,73 +45,15 @@ namespace BepuPhysics
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void RotateInverseInertia(ref Triangular3x3 localInverseInertiaTensor, ref Quaternion orientation, out Triangular3x3 rotatedInverseInertiaTensor)
+        public static void RotateInverseInertia(ref Symmetric3x3 localInverseInertiaTensor, ref Quaternion orientation, out Symmetric3x3 rotatedInverseInertiaTensor)
         {
             Matrix3x3.CreateFromQuaternion(orientation, out var orientationMatrix);
             //I^-1 = RT * Ilocal^-1 * R 
             //NOTE: If you were willing to confuse users a little bit, the local inertia could be required to be diagonal.
             //This would be totally fine for all the primitive types which happen to have diagonal inertias, but for more complex shapes (convex hulls, meshes), 
             //there would need to be a reorientation step. That could be confusing, and it's probably not worth it.
-            Triangular3x3.RotationSandwich(ref orientationMatrix, ref localInverseInertiaTensor, out rotatedInverseInertiaTensor);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static float Cos(float x)
-        {
-            //This exists primarily for consistency between the PoseIntegrator and sweeps, not necessarily for raw performance relative to Math.Cos.
-            if (x < 0)
-                x = -x;
-            var intervalIndex = x * (1f / MathHelper.TwoPi);
-            x -= (int)intervalIndex * MathHelper.TwoPi;
-
-            //[0, pi/2] = f(x)
-            //(pi/2, pi] = -f(Pi - x)
-            //(pi, 3 * pi / 2] = -f(x - Pi)
-            //(3*pi/2, 2*pi] = f(2 * Pi - x)
-            //This could be done more cleverly.
-            bool negate;
-            if (x < MathHelper.Pi)
-            {
-                if (x < MathHelper.PiOver2)
-                {
-                    negate = false;
-                }
-                else
-                {
-                    x = MathHelper.Pi - x;
-                    negate = true;
-                }
-            }
-            else
-            {
-                if (x < 3 * MathHelper.PiOver2)
-                {
-                    x = x - MathHelper.Pi;
-                    negate = true;
-                }
-                else
-                {
-                    x = MathHelper.TwoPi - x;
-                    negate = false;
-                }
-            }
-
-            //The expression is a rational interpolation from 0 to Pi/2. Maximum error is a little more than 3e-6.
-            var x2 = x * x;
-            var x3 = x2 * x;
-            //TODO: This could be reorganized into two streams of FMAs if that was available.
-            var numerator = 1 - 0.24f * x - 0.4266f * x2 + 0.110838f * x3;
-            var denominator = 1 - 0.240082f * x + 0.0741637f * x2 - 0.0118786f * x3;
-            var result = numerator / denominator;
-            return negate ? -result : result;
-
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static float Sin(float x)
-        {
-            return Cos(x - MathHelper.PiOver2);
-        }
+            Symmetric3x3.RotationSandwich(orientationMatrix, localInverseInertiaTensor, out rotatedInverseInertiaTensor);
+        }      
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Integrate(in Vector3 position, in Vector3 linearVelocity, float dt, out Vector3 integratedPosition)
@@ -132,15 +74,37 @@ namespace BepuPhysics
             {
                 var halfAngle = speed * dt * 0.5f;
                 Quaternion q;
-                Unsafe.As<Quaternion, Vector3>(ref *&q) = angularVelocity * (Sin(halfAngle) / speed);
-                q.W = Cos(halfAngle);
-                Quaternion.ConcatenateWithoutOverlap(orientation, q, out integratedOrientation);
+                Unsafe.As<Quaternion, Vector3>(ref *&q) = angularVelocity * (MathHelper.Sin(halfAngle) / speed);
+                q.W = MathHelper.Cos(halfAngle);
+                //Note that the input and output may overlap.
+                Quaternion.Concatenate(orientation, q, out integratedOrientation);
                 Quaternion.Normalize(ref integratedOrientation);
             }
             else
             {
                 integratedOrientation = orientation;
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void Integrate(in QuaternionWide start, in Vector3Wide angularVelocity, in Vector<float> halfDt, out QuaternionWide integrated)
+        {
+            Vector3Wide.Length(angularVelocity, out var speed);
+            var halfAngle = speed * halfDt;
+            QuaternionWide q;
+            MathHelper.Sin(halfAngle, out var s);
+            var scale = s / speed;
+            q.X = angularVelocity.X * scale;
+            q.Y = angularVelocity.Y * scale;
+            q.Z = angularVelocity.Z * scale;
+            MathHelper.Cos(halfAngle, out q.W);
+            QuaternionWide.ConcatenateWithoutOverlap(start, q, out var concatenated);
+            QuaternionWide.Normalize(concatenated, out integrated);
+            var speedValid = Vector.GreaterThan(speed, new Vector<float>(1e-15f));
+            integrated.X = Vector.ConditionalSelect(speedValid, integrated.X, start.X);
+            integrated.Y = Vector.ConditionalSelect(speedValid, integrated.Y, start.Y);
+            integrated.Z = Vector.ConditionalSelect(speedValid, integrated.Z, start.Z);
+            integrated.W = Vector.ConditionalSelect(speedValid, integrated.W, start.W);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

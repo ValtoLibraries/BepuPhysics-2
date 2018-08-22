@@ -1,4 +1,5 @@
 ﻿using BepuUtilities;
+using DemoContentLoader;
 using DemoRenderer;
 using DemoRenderer.UI;
 using Demos.UI;
@@ -11,8 +12,10 @@ namespace Demos
     public class DemoHarness : IDisposable
     {
         Window window;
+        ContentArchive content;
         internal Input input;
         Camera camera;
+        Grabber grabber;
         internal Controls controls;
         Font font;
 
@@ -40,22 +43,27 @@ namespace Demos
             if (demoIndex >= 0 && demoIndex < demoSet.Count)
             {
                 demo.Dispose();
-                demo = demoSet.Build(demoIndex, camera);
+                demo = demoSet.Build(demoIndex, content, camera);
+                //Forcing a full blocking collection makes it a little easier to distinguish some memory issues.
+                GC.Collect(int.MaxValue, GCCollectionMode.Forced, true, true);
             }
         }
 
         SimulationTimeSamples timeSamples = new SimulationTimeSamples(512);
 
-        public DemoHarness(Window window, Input input, Camera camera, Font font,
+        public DemoHarness(GameLoop loop, ContentArchive content,
             Controls? controls = null)
         {
-            this.window = window;
-            this.input = input;
-            this.camera = camera;
+            this.window = loop.Window;
+            this.input = loop.Input;
+            this.camera = loop.Camera;
+            this.content = content;
             if (controls == null)
                 this.controls = Controls.Default;
-            this.font = font;
-
+            
+            var fontContent = content.Load<FontContent>(@"Content\Carlito-Regular.ttf");
+            font = new Font(loop.Surface.Device, loop.Surface.Context, fontContent);
+            
             timingGraph = new Graph(new GraphDescription
             {
                 BodyLineColor = new Vector3(1, 1, 1),
@@ -97,7 +105,7 @@ namespace Demos
             timingGraph.AddSeries("Batch Compress", new Vector3(0, 0.5f, 0), 0.125f, timeSamples.BatchCompressor);
 
             demoSet = new DemoSet();
-            demo = demoSet.Build(0, camera);
+            demo = demoSet.Build(0, content, camera);
 
             OnResize(window.Resolution);
         }
@@ -230,6 +238,10 @@ namespace Demos
                     input.MouseLocked = !input.MouseLocked;
                 }
 
+                grabber.Update(demo.Simulation, camera, input.MouseLocked, controls.Grab.IsDown(input), GetNormalizedMousePosition());
+
+
+
                 if (controls.ShowControls.WasTriggered(input))
                 {
                     showControls = !showControls;
@@ -268,6 +280,11 @@ namespace Demos
             timeSamples.RecordFrame(demo.Simulation);
         }
 
+        private Vector2 GetNormalizedMousePosition()
+        {
+            return new Vector2((float)input.MousePosition.X / window.Resolution.X, (float)input.MousePosition.Y / window.Resolution.Y);
+        }
+
         TextBuilder uiText = new TextBuilder(128);
         public void Render(Renderer renderer)
         {
@@ -288,7 +305,7 @@ namespace Demos
             if (showControls)
             {
                 var penPosition = new Vector2(window.Resolution.X - textHeight * 6 - 25, window.Resolution.Y - 25);
-                penPosition.Y -= 17 * lineSpacing;
+                penPosition.Y -= 18 * lineSpacing;
                 uiText.Clear().Append("Controls: ");
                 var headerHeight = textHeight * 1.2f;
                 renderer.TextBatcher.Write(uiText, penPosition - new Vector2(0.5f * GlyphBatch.MeasureLength(uiText, font, headerHeight), 0), headerHeight, textColor, font);
@@ -310,6 +327,7 @@ namespace Demos
 
                 //Conveniently, enum strings are cached. Every (Key).ToString() returns the same reference for the same key, so no garbage worries.
                 WriteName(nameof(controls.LockMouse), controls.LockMouse.ToString());
+                WriteName(nameof(controls.Grab), controls.Grab.ToString());
                 WriteName(nameof(controls.MoveForward), controls.MoveForward.ToString());
                 WriteName(nameof(controls.MoveBackward), controls.MoveBackward.ToString());
                 WriteName(nameof(controls.MoveLeft), controls.MoveLeft.ToString());
@@ -350,6 +368,7 @@ namespace Demos
                     uiText.Clear().Append(1e3 * timeSamples.Simulation[timeSamples.Simulation.End - 1], timingGraph.Description.VerticalIntervalLabelRounding).Append(" ms/step"),
                     new Vector2(window.Resolution.X - inset - GlyphBatch.MeasureLength(uiText, font, timingTextSize), inset), timingTextSize, timingGraph.Description.TextColor, font);
             }
+            grabber.Draw(renderer.Lines, camera, input.MouseLocked, controls.Grab.IsDown(input), GetNormalizedMousePosition());
             renderer.Shapes.AddInstances(demo.Simulation, demo.ThreadDispatcher);
             renderer.Lines.Extract(demo.Simulation.Bodies, demo.Simulation.Solver, demo.Simulation.BroadPhase, showConstraints, showContacts, showBoundingBoxes, demo.ThreadDispatcher);
         }

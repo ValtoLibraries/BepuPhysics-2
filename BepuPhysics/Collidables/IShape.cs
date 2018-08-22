@@ -1,7 +1,10 @@
 ﻿using BepuPhysics.CollisionDetection;
+using BepuPhysics.CollisionDetection.CollisionTasks;
 using BepuPhysics.Trees;
 using BepuUtilities;
+using BepuUtilities.Collections;
 using BepuUtilities.Memory;
+using System;
 using System.Numerics;
 
 namespace BepuPhysics.Collidables
@@ -12,7 +15,6 @@ namespace BepuPhysics.Collidables
     public interface IShape
     {
         int TypeId { get; }
-
         ShapeBatch CreateShapeBatch(BufferPool pool, int initialCapacity, Shapes shapeBatches);
     }
 
@@ -38,25 +40,35 @@ namespace BepuPhysics.Collidables
 
         bool RayTest(in RigidPose pose, in Vector3 origin, in Vector3 direction, out float t, out Vector3 normal);
     }
-    public interface IBroadcastableShape<TShape, TShapeWide> : IConvexShape where TShape : IBroadcastableShape<TShape, TShapeWide> where TShapeWide : IShapeWide<TShape>
-    {
-        void Broadcast(out TShapeWide wide);
-    }
 
-    public interface ICompoundShape : IShape
+    public interface ICompoundShape : IShape, IBoundsQueryableCompound
     {
         //Note that compound shapes have no wide GetBounds function. Compounds, by virtue of containing shapes of different types, cannot be usefully vectorized over.
         //Instead, their children are added to other computation batches.
         void ComputeBounds(in BepuUtilities.Quaternion orientation, Shapes shapeBatches, out Vector3 min, out Vector3 max);
+        void AddChildBoundsToBatcher(ref BoundingBoxBatcher batcher, ref RigidPose pose, ref BodyVelocity velocity, int bodyIndex);
 
         //Compound shapes may require indirections into other shape batches. This isn't wonderfully fast, but this scalar path is designed more for convenience than performance anyway.
         //For performance, a batched and vectorized codepath should be used.
-        bool RayTest(in RigidPose pose, in Vector3 origin, in Vector3 direction, Shapes shapeBatches, out float t, out Vector3 normal);
-        void RayTest<TRayHitHandler>(RigidPose pose, Shapes shapeBatches, ref RaySource rays, ref TRayHitHandler hitHandler) where TRayHitHandler : struct, IShapeRayHitHandler;
-
-        void AddChildBoundsToBatcher(ref BoundingBoxBatcher batcher, ref RigidPose pose, ref BodyVelocity velocity, int bodyIndex);
+        bool RayTest(in RigidPose pose, in Vector3 origin, in Vector3 direction, float maximumT, Shapes shapeBatches, out float t, out Vector3 normal);
+        void RayTest<TRayHitHandler>(in RigidPose pose, Shapes shapeBatches, ref RaySource rays, ref TRayHitHandler hitHandler) where TRayHitHandler : struct, IShapeRayHitHandler;
+        int ChildCount { get; }
+        ref CompoundChild GetChild(int compoundChildIndex);
+        void Dispose(BufferPool pool);
     }
 
+    public interface IMeshShape : IShape, IBoundsQueryableCompound
+    {
+        //Meshes have homogenous child types, so internal vectorization is in principle possible. And it's hard to vectorize over multiple meshes.
+        //And the speed of mesh bounds calculation is pretty irrelevant, since meshes should essentially always be static.
+        void ComputeBounds(in BepuUtilities.Quaternion orientation, out Vector3 min, out Vector3 max);
+
+        bool RayTest(in RigidPose pose, in Vector3 origin, in Vector3 direction, float maximumT, out float t, out Vector3 normal);
+        void RayTest<TRayHitHandler>(in RigidPose pose, ref RaySource rays, ref TRayHitHandler hitHandler) where TRayHitHandler : struct, IShapeRayHitHandler;
+
+        void GetLocalTriangle(int triangleIndex, out Triangle triangle);
+        void Dispose(BufferPool pool);
+    }
 
     public interface IShapeWide<TShape> where TShape : IShape
     {
@@ -66,8 +78,8 @@ namespace BepuPhysics.Collidables
         /// <remarks>Note that we are effectively using the TShapeWide as a stride.
         /// The base address is offset by the user of this function, so the implementation only ever considers the first slot.</remarks>
         /// <param name="source">AOS-formatted shape to gather from.</param>
-        void Gather(ref TShape source);
-        void Broadcast(ref TShape shape);
+        void WriteFirst(ref TShape source);
+        void Broadcast(in TShape shape);
 
         void GetBounds(ref QuaternionWide orientations, out Vector<float> maximumRadius, out Vector<float> maximumAngularExpansion, out Vector3Wide min, out Vector3Wide max);
         /// <summary>

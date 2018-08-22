@@ -1,5 +1,6 @@
 ﻿using BepuPhysics.Collidables;
 using BepuUtilities;
+using BepuUtilities.Memory;
 using System;
 using System.Diagnostics;
 using System.Numerics;
@@ -26,34 +27,36 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             ShapeTypeIndexA = default(TShapeA).TypeId;
             ShapeTypeIndexB = default(TShapeB).TypeId;
         }
-        public override unsafe bool Sweep(
-            void* shapeDataA, int shapeTypeA, in RigidPose localPoseA, in Quaternion orientationA, in BodyVelocity velocityA,
-            void* shapeDataB, int shapeTypeB, in RigidPose localPoseB, in Vector3 offsetB, in Quaternion orientationB, in BodyVelocity velocityB, float maximumT,
+        protected override unsafe bool PreorderedTypeSweep(
+            void* shapeDataA, in RigidPose localPoseA, in Quaternion orientationA, in BodyVelocity velocityA,
+            void* shapeDataB, in RigidPose localPoseB, in Vector3 offsetB, in Quaternion orientationB, in BodyVelocity velocityB, float maximumT,
             float minimumProgression, float convergenceThreshold, int maximumIterationCount,
             out float t0, out float t1, out Vector3 hitLocation, out Vector3 hitNormal)
         {
-            return ConvexSweepTaskCommon.Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester>(
-                shapeDataA, shapeTypeA, localPoseA, orientationA, velocityA,
-                shapeDataB, shapeTypeB, localPoseB, offsetB, orientationB, velocityB,
-                maximumT, minimumProgression, convergenceThreshold, maximumIterationCount,
+            OffsetSweep sweepModifier = default;
+            sweepModifier.LocalPoseA = localPoseA;
+            sweepModifier.LocalPoseB = localPoseB;
+            return Sweep(
+                shapeDataA, orientationA, velocityA,
+                shapeDataB, offsetB, orientationB, velocityB,
+                maximumT, minimumProgression, convergenceThreshold, maximumIterationCount, ref sweepModifier,
                 out t0, out t1, out hitLocation, out hitNormal);
         }
-        public override unsafe bool Sweep<TSweepFilter>(
-            void* shapeDataA, int shapeTypeA, in Quaternion orientationA, in BodyVelocity velocityA,
-            void* shapeDataB, int shapeTypeB, in Vector3 offsetB, in Quaternion orientationB, in BodyVelocity velocityB, float maximumT,
-            float minimumProgression, float convergenceThreshold, int maximumIterationCount,
-            ref TSweepFilter filter, Shapes shapes, SweepTaskRegistry sweepTasks, out float t0, out float t1, out Vector3 hitLocation, out Vector3 hitNormal)
-        {
-            return ConvexSweepTaskCommon.Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester>(
-                shapeDataA, shapeTypeA, orientationA, velocityA,
-                shapeDataB, shapeTypeB, offsetB, orientationB, velocityB,
-                maximumT, minimumProgression, convergenceThreshold, maximumIterationCount,
-                out t0, out t1, out hitLocation, out hitNormal);
-        }
-    }
 
-    class ConvexSweepTaskCommon
-    {
+        protected override unsafe bool PreorderedTypeSweep<TSweepFilter>(
+            void* shapeDataA, in Quaternion orientationA, in BodyVelocity velocityA,
+            void* shapeDataB, in Vector3 offsetB, in Quaternion orientationB, in BodyVelocity velocityB, float maximumT,
+            float minimumProgression, float convergenceThreshold, int maximumIterationCount,
+            bool requiresFlip, ref TSweepFilter filter, Shapes shapes, SweepTaskRegistry sweepTasks, BufferPool pool, out float t0, out float t1, out Vector3 hitLocation, out Vector3 hitNormal)
+        {
+            UnoffsetSweep sweepModifier = default;
+            return Sweep(
+                shapeDataA, orientationA, velocityA,
+                shapeDataB, offsetB, orientationB, velocityB,
+                maximumT, minimumProgression, convergenceThreshold, maximumIterationCount, ref sweepModifier,
+                out t0, out t1, out hitLocation, out hitNormal);
+        }
+
         static bool GetSphereCastInterval(in Vector3 origin, in Vector3 direction, float radius, out float t0, out float t1)
         {
             //Normalize the direction. Sqrts aren't *that* bad, and it both simplifies things and helps avoid numerical problems.
@@ -97,63 +100,6 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void Cos(in Vector<float> x, out Vector<float> result)
-        {
-            //This exists primarily for consistency between the PoseIntegrator and sweeps, not necessarily for raw performance relative to Math.Cos.
-            var periodX = Vector.Abs(x);
-            //TODO: No floor or truncate available... may want to revisit later.
-            periodX = periodX - MathHelper.TwoPi * Vector.ConvertToSingle(Vector.ConvertToInt32(periodX * (1f / MathHelper.TwoPi)));
-
-            //[0, pi/2] = f(x)
-            //(pi/2, pi] = -f(Pi - x)
-            //(pi, 3 * pi / 2] = -f(x - Pi)
-            //(3*pi/2, 2*pi] = f(2 * Pi - x)
-            //This could be done more cleverly.
-            Vector<float> y;
-            y = Vector.ConditionalSelect(Vector.GreaterThan(periodX, new Vector<float>(MathHelper.PiOver2)), new Vector<float>(MathHelper.Pi) - periodX, periodX);
-            y = Vector.ConditionalSelect(Vector.GreaterThan(periodX, new Vector<float>(MathHelper.Pi)), new Vector<float>(-MathHelper.Pi) + periodX, y);
-            y = Vector.ConditionalSelect(Vector.GreaterThan(periodX, new Vector<float>(3 * MathHelper.PiOver2)), new Vector<float>(MathHelper.TwoPi) - periodX, y);
-
-            //The expression is a rational interpolation from 0 to Pi/2. Maximum error is a little more than 3e-6.
-            var y2 = y * y;
-            var y3 = y2 * y;
-            //TODO: This could be reorganized into two streams of FMAs if that was available.
-            var numerator = Vector<float>.One - 0.24f * y - 0.4266f * y2 + 0.110838f * y3;
-            var denominator = Vector<float>.One - 0.240082f * y + 0.0741637f * y2 - 0.0118786f * y3;
-            result = numerator / denominator;
-            result = Vector.ConditionalSelect(
-                Vector.BitwiseAnd(
-                    Vector.GreaterThan(periodX, new Vector<float>(MathHelper.PiOver2)),
-                    Vector.LessThan(periodX, new Vector<float>(3 * MathHelper.PiOver2))), -result, result);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void Sin(in Vector<float> x, out Vector<float> result)
-        {
-            Cos(x - new Vector<float>(MathHelper.PiOver2), out result);
-        }
-
-        static void Integrate(ref QuaternionWide start, ref Vector3Wide angularVelocity, ref Vector<float> halfDt, out QuaternionWide integrated)
-        {
-            Vector3Wide.Length(ref angularVelocity, out var speed);
-            var halfAngle = speed * halfDt;
-            QuaternionWide q;
-            Sin(halfAngle, out var s);
-            var scale = s / speed;
-            q.X = angularVelocity.X * scale;
-            q.Y = angularVelocity.Y * scale;
-            q.Z = angularVelocity.Z * scale;
-            Cos(halfAngle, out q.W);
-            QuaternionWide.ConcatenateWithoutOverlap(start, q, out integrated);
-            QuaternionWide.Normalize(ref integrated, out integrated);
-            var speedValid = Vector.GreaterThan(speed, new Vector<float>(1e-15f));
-            integrated.X = Vector.ConditionalSelect(speedValid, integrated.X, start.X);
-            integrated.Y = Vector.ConditionalSelect(speedValid, integrated.Y, start.Y);
-            integrated.Z = Vector.ConditionalSelect(speedValid, integrated.Z, start.Z);
-            integrated.W = Vector.ConditionalSelect(speedValid, integrated.W, start.W);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void GetSampleTimes(float t0, float t1, ref Vector<float> samples)
         {
             ref var sampleBase = ref Unsafe.As<Vector<float>, float>(ref samples);
@@ -164,93 +110,12 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static unsafe bool Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester>(
-            void* shapeDataA, int shapeTypeA, in Quaternion orientationA, in BodyVelocity velocityA,
-            void* shapeDataB, int shapeTypeB, in Vector3 offsetB, in Quaternion orientationB, in BodyVelocity velocityB,
-            float maximumT, float minimumProgression, float convergenceThreshold, int maximumIterationCount,
-            out float t0, out float t1, out Vector3 hitLocation, out Vector3 hitNormal)
-            where TShapeA : struct, IConvexShape
-            where TShapeB : struct, IConvexShape
-            where TShapeWideA : struct, IShapeWide<TShapeA>
-            where TShapeWideB : struct, IShapeWide<TShapeB>
-            where TPairDistanceTester : struct, IPairDistanceTester<TShapeWideA, TShapeWideB>
-        {
-            Debug.Assert(
-                (shapeTypeA == default(TShapeA).TypeId && shapeTypeB == default(TShapeB).TypeId) ||
-                (shapeTypeA == default(TShapeB).TypeId && shapeTypeB == default(TShapeA).TypeId),
-                "Sweep type requirements not met.");
-            var sweepModifier = new UnoffsetSweep();
-            if (shapeTypeA == default(TShapeA).TypeId)
-            {
-                return Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester, UnoffsetSweep>(
-                    shapeDataA, orientationA, velocityA,
-                    shapeDataB, offsetB, orientationB, velocityB,
-                    maximumT, minimumProgression, convergenceThreshold, maximumIterationCount, ref sweepModifier,
-                    out t0, out t1, out hitLocation, out hitNormal);
-            }
-            else
-            {
-                var intersected = Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester, UnoffsetSweep>(
-                    shapeDataB, orientationB, velocityB,
-                    shapeDataA, -offsetB, orientationA, velocityA,
-                    maximumT, minimumProgression, convergenceThreshold, maximumIterationCount, ref sweepModifier,
-                    out t0, out t1, out hitLocation, out hitNormal);
-                //Normals are calibrated to point from B to A by convention; retain that convention if the parameters were reversed.
-                hitNormal = -hitNormal;
-                hitLocation = hitLocation + offsetB;
-                return intersected;
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static unsafe bool Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester>(
-            void* shapeDataA, int shapeTypeA, in RigidPose localPoseA, in Quaternion orientationA, in BodyVelocity velocityA,
-            void* shapeDataB, int shapeTypeB, in RigidPose localPoseB, in Vector3 offsetB, in Quaternion orientationB, in BodyVelocity velocityB,
-            float maximumT, float minimumProgression, float convergenceThreshold, int maximumIterationCount,
-            out float t0, out float t1, out Vector3 hitLocation, out Vector3 hitNormal)
-            where TShapeA : struct, IConvexShape
-            where TShapeB : struct, IConvexShape
-            where TShapeWideA : struct, IShapeWide<TShapeA>
-            where TShapeWideB : struct, IShapeWide<TShapeB>
-            where TPairDistanceTester : struct, IPairDistanceTester<TShapeWideA, TShapeWideB>
-        {
-            Debug.Assert(
-                (shapeTypeA == default(TShapeA).TypeId && shapeTypeB == default(TShapeB).TypeId) ||
-                (shapeTypeA == default(TShapeB).TypeId && shapeTypeB == default(TShapeA).TypeId),
-                "Sweep type requirements not met.");
-            OffsetSweep sweepModifier = default;
-            if (shapeTypeA == default(TShapeA).TypeId)
-            {
-                sweepModifier.LocalPoseA = localPoseA;
-                sweepModifier.LocalPoseB = localPoseB;
-                return Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester, OffsetSweep>(
-                    shapeDataA, orientationA, velocityA,
-                    shapeDataB, offsetB, orientationB, velocityB,
-                    maximumT, minimumProgression, convergenceThreshold, maximumIterationCount, ref sweepModifier,
-                    out t0, out t1, out hitLocation, out hitNormal);
-            }
-            else
-            {
-                sweepModifier.LocalPoseB = localPoseA;
-                sweepModifier.LocalPoseA = localPoseB;
-                var intersected = Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester, OffsetSweep>(
-                    shapeDataB, orientationB, velocityB,
-                    shapeDataA, -offsetB, orientationA, velocityA,
-                    maximumT, minimumProgression, convergenceThreshold, maximumIterationCount, ref sweepModifier,
-                    out t0, out t1, out hitLocation, out hitNormal);
-                //Normals are calibrated to point from B to A by convention; retain that convention if the parameters were reversed.
-                hitNormal = -hitNormal;
-                hitLocation = hitLocation + offsetB;
-                return intersected;
-            }
-        }
-
         interface ISweepModifier
         {
-            float GetBoundingSphereRadiusExpansion(float maximumT,
+            bool GetSphereCastInterval(
+                in Vector3 offsetB, in Vector3 linearVelocityB, float maximumT, float maximumRadiusA, float maximumRadiusB,
                 in Quaternion orientationA, in Vector3 angularVelocityA, float angularSpeedA,
-                in Quaternion orientationB, in Vector3 angularVelocityB, float angularSpeedB);
+                in Quaternion orientationB, in Vector3 angularVelocityB, float angularSpeedB, out float t0, out float t1, out Vector3 hitNormal, out Vector3 hitLocation);
             void ConstructSamples(float t0, float t1, ref Vector3Wide linearB, ref Vector3Wide angularA, ref Vector3Wide angularB,
                 ref Vector3Wide initialOffsetB, ref QuaternionWide initialOrientationA, ref QuaternionWide initialOrientationB,
                 ref Vector<float> samples, ref Vector3Wide sampleOffsetB, ref QuaternionWide sampleOrientationA, ref QuaternionWide sampleOrientationB);
@@ -275,21 +140,26 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             {
                 GetSampleTimes(t0, t1, ref samples);
                 //Integrate offsetB to sample locations.
-                Vector3Wide.Scale(ref linearB, ref samples, out var displacement);
-                Vector3Wide.Add(ref initialOffsetB, ref displacement, out sampleOffsetB);
+                Vector3Wide.Scale(linearB, samples, out var displacement);
+                Vector3Wide.Add(initialOffsetB, displacement, out sampleOffsetB);
 
                 //Integrate orientations to sample locations.
                 var halfSamples = samples * 0.5f;
-                Integrate(ref initialOrientationA, ref angularA, ref halfSamples, out sampleOrientationA);
-                Integrate(ref initialOrientationB, ref angularB, ref halfSamples, out sampleOrientationB);
+                PoseIntegrator.Integrate(initialOrientationA, angularA, halfSamples, out sampleOrientationA);
+                PoseIntegrator.Integrate(initialOrientationB, angularB, halfSamples, out sampleOrientationB);
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public float GetBoundingSphereRadiusExpansion(float maximumT,
+            public bool GetSphereCastInterval(
+                in Vector3 offsetB, in Vector3 linearVelocityB, float maximumT, float maximumRadiusA, float maximumRadiusB,
                 in Quaternion orientationA, in Vector3 angularVelocityA, float angularSpeedA,
-                in Quaternion orientationB, in Vector3 angularVelocityB, float angularSpeedB)
+                in Quaternion orientationB, in Vector3 angularVelocityB, float angularSpeedB, out float t0, out float t1, out Vector3 hitNormal, out Vector3 hitLocation)
             {
-                return 0;
+                var hit = ConvexPairSweepTask<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester>.GetSphereCastInterval(offsetB, linearVelocityB, maximumRadiusA + maximumRadiusB, out t0, out t1);
+                hitLocation = offsetB + linearVelocityB * t0;
+                hitNormal = Vector3.Normalize(-hitLocation); //Normals are calibrated to point from B to A.
+                hitLocation += hitNormal * maximumRadiusB;
+                return hit;
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -329,28 +199,29 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             {
                 GetSampleTimes(t0, t1, ref samples);
                 //Integrate offsetB to sample locations.
-                Vector3Wide.Scale(ref linearB, ref samples, out var displacement);
-                Vector3Wide.Add(ref initialOffsetB, ref displacement, out sampleOffsetB);
+                Vector3Wide.Scale(linearB, samples, out var displacement);
+                Vector3Wide.Add(initialOffsetB, displacement, out sampleOffsetB);
 
                 //Note that the initial orientations are properties of the owning body, not of the child.
                 //The orientation of the child itself is the product of localOrientation * bodyOrientation.
                 var halfSamples = samples * 0.5f;
                 RigidPoses.Broadcast(LocalPoseA, out var localPosesA);
-                Integrate(ref initialOrientationA, ref angularA, ref halfSamples, out var integratedOrientationA);
+                PoseIntegrator.Integrate(initialOrientationA, angularA, halfSamples, out var integratedOrientationA);
                 Compound.GetRotatedChildPose(localPosesA, integratedOrientationA, out var childPositionA, out sampleOrientationA);
 
                 RigidPoses.Broadcast(LocalPoseB, out var localPosesB);
-                Integrate(ref initialOrientationB, ref angularB, ref halfSamples, out var integratedOrientationB);
+                PoseIntegrator.Integrate(initialOrientationB, angularB, halfSamples, out var integratedOrientationB);
                 Compound.GetRotatedChildPose(localPosesB, integratedOrientationB, out var childPositionB, out sampleOrientationB);
 
-                Vector3Wide.Subtract(ref childPositionB, ref childPositionA, out var netOffsetB);
-                Vector3Wide.Add(ref sampleOffsetB, ref netOffsetB, out sampleOffsetB);
+                Vector3Wide.Subtract(childPositionB, childPositionA, out var netOffsetB);
+                Vector3Wide.Add(sampleOffsetB, netOffsetB, out sampleOffsetB);
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public float GetBoundingSphereRadiusExpansion(float maximumT,
+            public bool GetSphereCastInterval(
+                in Vector3 offsetB, in Vector3 linearVelocityB, float maximumT, float maximumRadiusA, float maximumRadiusB,
                 in Quaternion orientationA, in Vector3 angularVelocityA, float angularSpeedA,
-                in Quaternion orientationB, in Vector3 angularVelocityB, float angularSpeedB)
+                in Quaternion orientationB, in Vector3 angularVelocityB, float angularSpeedB, out float t0, out float t1, out Vector3 hitNormal, out Vector3 hitLocation)
             {
                 //The tangent velocity magnitude doesn't change over the course of the sweep. Compute and cache it as an upper bound on the contribution from the offset.
                 Quaternion.TransformWithoutOverlap(LocalPoseA.Position, orientationA, out var rA);
@@ -365,7 +236,13 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
                 AngularVelocityDirectionB = angularSpeedB > 1e-8f ? angularVelocityB / angularSpeedB : new Vector3();
                 //The maximum translation due to angular velocity is at 180 degrees, so the maximum translation induced by angular motion is 2 * radius.
                 //If the sweep covers a short enough duration that the maximum is not hit, we'll use a (loose) estimate based on extrapolating the tangent speed.
-                return Math.Min(maximumT * (TangentSpeedA + TangentSpeedB), TwiceRadiusA + TwiceRadiusB);
+                var nonlinearExpansion = Math.Min(maximumT * (TangentSpeedA + TangentSpeedB), TwiceRadiusA + TwiceRadiusB);
+                var offsetBIncludingChildPoses = offsetB + rB - rA;
+                var hit = ConvexPairSweepTask<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester>.GetSphereCastInterval(offsetBIncludingChildPoses, linearVelocityB, maximumRadiusA + maximumRadiusB + nonlinearExpansion, out t0, out t1);
+                hitLocation = offsetBIncludingChildPoses + linearVelocityB * t0;
+                hitNormal = Vector3.Normalize(-hitLocation); //Normals are calibrated to point from B to A.
+                hitLocation += hitNormal * (maximumRadiusB + nonlinearExpansion);
+                return hit;
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -380,29 +257,24 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
                 //if the angular velocity is perpendicular to the normal, displacement is no more than 2 * radius. As the N * W/||W|| dot goes to 1, the maximum displacement goes to 0.
                 //(Note that you could bound this even more tightly by noting that 2 * radius is only hit when R/||R|| * NOnPlane = 1. Just didn't go that far (yet).)
                 Vector3Wide.Broadcast(AngularVelocityDirectionA, out var directionA);
-                Vector3Wide.Dot(ref normal, ref directionA, out var dotA);
+                Vector3Wide.Dot(normal, directionA, out var dotA);
                 var scaleA = Vector.SquareRoot(Vector.Max(Vector<float>.Zero, Vector<float>.One - dotA * dotA));
                 velocityContributionA = new Vector<float>(TangentSpeedA) * scaleA;
                 maximumDisplacementA = new Vector<float>(TwiceRadiusA) * scaleA;
                 Vector3Wide.Broadcast(AngularVelocityDirectionB, out var directionB);
-                Vector3Wide.Dot(ref normal, ref directionB, out var dotB);
+                Vector3Wide.Dot(normal, directionB, out var dotB);
                 var scaleB = Vector.SquareRoot(Vector.Max(Vector<float>.Zero, Vector<float>.One - dotB * dotB));
                 velocityContributionB = new Vector<float>(TangentSpeedB) * scaleB;
                 maximumDisplacementB = new Vector<float>(TwiceRadiusB) * scaleB;
             }
         }
 
-        static unsafe bool Sweep<TShapeA, TShapeWideA, TShapeB, TShapeWideB, TPairDistanceTester, TSweepModifier>(
+        static unsafe bool Sweep<TSweepModifier>(
             void* shapeDataA, in Quaternion orientationA, in BodyVelocity velocityA,
             void* shapeDataB, in Vector3 offsetB, in Quaternion orientationB, in BodyVelocity velocityB,
             float maximumT, float minimumProgression, float convergenceThreshold, int maximumIterationCount,
             ref TSweepModifier sweepModifier,
             out float t0, out float t1, out Vector3 hitLocation, out Vector3 hitNormal)
-            where TShapeA : struct, IConvexShape
-            where TShapeB : struct, IConvexShape
-            where TShapeWideA : struct, IShapeWide<TShapeA>
-            where TShapeWideB : struct, IShapeWide<TShapeB>
-            where TPairDistanceTester : struct, IPairDistanceTester<TShapeWideA, TShapeWideB>
             where TSweepModifier : ISweepModifier
         {
             ref var shapeA = ref Unsafe.AsRef<TShapeA>(shapeDataA);
@@ -410,8 +282,8 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             //TODO: Would be nice to get rid of this pointless zero init (if the compiler doesn't eventually get rid of it).
             var wideA = default(TShapeWideA);
             var wideB = default(TShapeWideB);
-            wideA.Broadcast(ref shapeA);
-            wideB.Broadcast(ref shapeB);
+            wideA.Broadcast(shapeA);
+            wideB.Broadcast(shapeB);
             var pairTester = default(TPairDistanceTester);
             //Initialize the interval to the tighter of 1) input bounds [0, maximumT] and 2) the swept impact interval of the bounding spheres of the two shapes.
             //Note that the intersection interval of two swept spheres is equivalent to performing a single ray cast against a sphere with a combined radius.
@@ -425,10 +297,10 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             shapeB.ComputeAngularExpansionData(out var maximumRadiusB, out var maximumAngularExpansionB);
             var angularSpeedA = velocityA.Angular.Length();
             var angularSpeedB = velocityB.Angular.Length();
-            var maximumNonlinearContribution = sweepModifier.GetBoundingSphereRadiusExpansion(maximumT,
+            if (!sweepModifier.GetSphereCastInterval(
+                offsetB, linearVelocityB, maximumT, maximumRadiusA, maximumRadiusB,
                 orientationA, velocityA.Angular, angularSpeedA,
-                orientationB, velocityB.Angular, angularSpeedB);
-            if (!GetSphereCastInterval(offsetB, linearVelocityB, maximumRadiusA + maximumRadiusB + maximumNonlinearContribution, out t0, out t1) || t0 > maximumT || t1 < 0)
+                orientationB, velocityB.Angular, angularSpeedB, out t0, out t1, out hitNormal, out hitLocation) || t0 > maximumT || t1 < 0)
             {
                 //The bounding spheres do not intersect, or the intersection interval is outside of the requested search interval.
                 hitLocation = default;
@@ -441,12 +313,6 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
                 t0 = 0;
             if (t1 > maximumT)
                 t1 = maximumT;
-            //Initialize the hit location and normal. If the t0 bracket we chose ends up to be intersecting (as it would be with spheres, for example),
-            //these values will be used.
-            hitLocation = offsetB + t0 * linearVelocityB;
-            //The normal points from B to A by convention.
-            hitNormal = Vector3.Normalize(-hitLocation);
-            hitLocation += hitNormal * maximumRadiusB;
 
             //We now have a relatively tight bracket (not much larger than the involved shapes, at least).
             //At a high level, the following sweep uses two parts:
@@ -506,7 +372,7 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
                 pairTester.Test(ref wideA, ref wideB, ref sampleOffsetB, ref sampleOrientationA, ref sampleOrientationB,
                     out intersections, out distances, out closestA, out normals);
 
-                Vector3Wide.Dot(ref normals, ref wideLinearVelocityB, out var linearVelocityAlongNormal);
+                Vector3Wide.Dot(normals, wideLinearVelocityB, out var linearVelocityAlongNormal);
                 sweepModifier.GetNonlinearVelocityContribution(ref normals,
                     out var nonlinearVelocityContributionA, out var nonlinearMaximumDisplacementA,
                     out var nonlinearVelocityContributionB, out var nonlinearMaximumDisplacementB);
@@ -526,19 +392,20 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
                 var angularDisplacementB = maxAngularExpansionB + nonlinearMaximumDisplacementB;
                 var bWorstCaseDistances = Vector.Max(Vector<float>.Zero, distances - angularDisplacementB);
                 var bothWorstCaseDistances = Vector.Max(Vector<float>.Zero, aWorstCaseDistances - angularDisplacementB);
-                var bothWorstCaseNextTime = bothWorstCaseDistances / linearVelocityAlongNormal;
+                //Divisions by zero velocity should result in a large (but finite) safe interval.
+                //Negative (separating) velocity can be treated in the same way.
+                var divisionGuard = new Vector<float>(1e-15f);
+                var bothWorstCaseNextTime = bothWorstCaseDistances / Vector.Max(divisionGuard, linearVelocityAlongNormal);
                 var angularContributionA = nonlinearVelocityContributionA + tangentSpeedA;
                 var angularContributionB = nonlinearVelocityContributionB + tangentSpeedB;
-                var aWorstCaseNextTime = aWorstCaseDistances / (linearVelocityAlongNormal + angularContributionB);
-                var bWorstCaseNextTime = bWorstCaseDistances / (linearVelocityAlongNormal + angularContributionA);
-                var bestCaseNextTime = distances / (linearVelocityAlongNormal + angularContributionA + angularContributionB);
+                var aWorstCaseNextTime = aWorstCaseDistances / Vector.Max(divisionGuard, (linearVelocityAlongNormal + angularContributionB));
+                var bWorstCaseNextTime = bWorstCaseDistances / Vector.Max(divisionGuard, (linearVelocityAlongNormal + angularContributionA));
+                var bestCaseNextTime = distances / Vector.Max(divisionGuard, linearVelocityAlongNormal + angularContributionA + angularContributionB);
                 var timeToNext = Vector.Max(Vector.Max(bothWorstCaseNextTime, aWorstCaseNextTime), Vector.Max(bWorstCaseNextTime, bestCaseNextTime));
-
-                var aWorstCasePreviousTime = aWorstCaseDistances / (angularContributionB - linearVelocityAlongNormal);
-                var bWorstCasePreviousTime = bWorstCaseDistances / (angularContributionA - linearVelocityAlongNormal);
-                var bestCasePreviousTime = distances / (angularContributionA + angularContributionB - linearVelocityAlongNormal);
+                var aWorstCasePreviousTime = aWorstCaseDistances / Vector.Max(divisionGuard, angularContributionB - linearVelocityAlongNormal);
+                var bWorstCasePreviousTime = bWorstCaseDistances / Vector.Max(divisionGuard, angularContributionA - linearVelocityAlongNormal);
+                var bestCasePreviousTime = distances / Vector.Max(divisionGuard, angularContributionA + angularContributionB - linearVelocityAlongNormal);
                 var timeToPrevious = Vector.Max(Vector.Max(-bothWorstCaseNextTime, aWorstCasePreviousTime), Vector.Max(bWorstCasePreviousTime, bestCasePreviousTime));
-
                 var safeIntervalStart = samples - timeToPrevious;
                 var safeIntervalEnd = samples + timeToNext;
                 var forcedIntervalEnd = samples + Vector.Max(timeToNext, minimumProgressionWide);

@@ -51,6 +51,10 @@ namespace BepuPhysics.CollisionDetection
         /// Gets whether the task is capable of generating subtasks. Note that subtask generators cannot generate subtasks that are themselves subtask generators.
         /// </summary>
         public bool SubtaskGenerator { get; protected set; }
+        /// <summary>
+        /// Gets the pair type that the ExecuteBatch call requires.
+        /// </summary>
+        public CollisionTaskPairType PairType { get; protected set; }
 
         //Note that we leave the details of input and output of a task's execution to be undefined.
         //A task can reach into the batcher and create new entries or trigger continuations as required.
@@ -67,11 +71,37 @@ namespace BepuPhysics.CollisionDetection
 
     }
 
+    public enum CollisionTaskPairType
+    {
+        /// <summary>
+        /// General pair for two shapes with full pose and flip mask, but no bounds related data.
+        /// </summary>
+        StandardPair,
+        /// <summary>
+        /// Pair specialized for convex pairs between two shapes of the same type.
+        /// </summary>
+        FliplessPair,
+        /// <summary>
+        /// Pair specialized for two spheres, requiring no flip mask or orientations.
+        /// </summary>
+        SpherePair,
+        /// <summary>
+        /// Pair specialized for convex pairs that involve one sphere which requires no orientation.
+        /// </summary>
+        SphereIncludingPair,
+        /// <summary>
+        /// Pair that requires computing local bounding boxes, and so requires extra information like velocity.
+        /// </summary>
+        BoundsTestedPair
+
+    }
+
     public struct CollisionTaskReference
     {
         public int TaskIndex;
         public int BatchSize;
         public int ExpectedFirstTypeId;
+        public CollisionTaskPairType PairType;
     }
 
     public class CollisionTaskRegistry
@@ -107,13 +137,13 @@ namespace BepuPhysics.CollisionDetection
                 }
             }
         }
-        
+
         public int Register(CollisionTask task)
         {
             //Some tasks can generate tasks. Note that this can only be one level deep; nesting compounds is not allowed.
             //All such generators will be placed at the beginning.
             var index = task.SubtaskGenerator ? 0 : count;
- 
+
             //This allocates a lot of garbage due to frequently resizing, but it does not matter- task registration a one time thing at program initialization.
             //Having tight bounds is more useful for performance in the end (by virtue of having a marginally simpler heap).
             int newCount = count + 1;
@@ -148,7 +178,13 @@ namespace BepuPhysics.CollisionDetection
                 //there is no need for them to appear in the top level matrix.
                 if (highestShapeIndex >= topLevelMatrix.Length)
                     ResizeMatrix(highestShapeIndex + 1);
-                var taskInfo = new CollisionTaskReference { TaskIndex = index, BatchSize = task.BatchSize, ExpectedFirstTypeId = task.ShapeTypeIndexA };
+                var taskInfo = new CollisionTaskReference
+                {
+                    TaskIndex = index,
+                    BatchSize = task.BatchSize,
+                    ExpectedFirstTypeId = task.ShapeTypeIndexA,
+                    PairType = task.PairType
+                };
                 topLevelMatrix[a][b] = taskInfo;
                 topLevelMatrix[b][a] = taskInfo;
             }
@@ -158,9 +194,9 @@ namespace BepuPhysics.CollisionDetection
             bool encounteredNongenerator = false;
             for (int i = 0; i < count; ++i)
             {
-                if(encounteredNongenerator)
+                if (encounteredNongenerator)
                 {
-                    Debug.Assert(!tasks[i].SubtaskGenerator, 
+                    Debug.Assert(!tasks[i].SubtaskGenerator,
                         "To avoid cycles, the tasks list should be partitioned into two contiguous groups: subtask generators, followed by non-subtask generators.");
                 }
                 else

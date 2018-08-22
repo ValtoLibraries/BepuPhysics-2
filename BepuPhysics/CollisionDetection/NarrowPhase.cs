@@ -104,6 +104,7 @@ namespace BepuPhysics.CollisionDetection
         //TODO: It is possible that some types will benefit from per-overlap data, like separating axes. For those, we should have type-dedicated overlap dictionaries.
         //The majority of type pairs, however, only require a constraint handle.
         public PairCache PairCache;
+        internal float timestepDuration;
 
         internal ContactConstraintAccessor[] contactConstraintAccessors;
         public void RegisterContactConstraintAccessor(ContactConstraintAccessor contactConstraintAccessor)
@@ -123,8 +124,9 @@ namespace BepuPhysics.CollisionDetection
             flushWorkerLoop = FlushWorkerLoop;
         }
 
-        public void Prepare(IThreadDispatcher threadDispatcher = null)
+        public void Prepare(float dt, IThreadDispatcher threadDispatcher = null)
         {
+            timestepDuration = dt;
             OnPrepare(threadDispatcher);
             PairCache.Prepare(threadDispatcher);
             ConstraintRemover.Prepare(threadDispatcher);
@@ -252,8 +254,7 @@ namespace BepuPhysics.CollisionDetection
 
             public OverlapWorker(int workerIndex, BufferPool pool, NarrowPhase<TCallbacks> narrowPhase)
             {
-                //Note that we give ownership of the 
-                Batcher = new CollisionBatcher<CollisionCallbacks>(pool, narrowPhase.Shapes, narrowPhase.CollisionTaskRegistry,
+                Batcher = new CollisionBatcher<CollisionCallbacks>(pool, narrowPhase.Shapes, narrowPhase.CollisionTaskRegistry, narrowPhase.timestepDuration,
                     new CollisionCallbacks(workerIndex, pool, narrowPhase));
                 PendingConstraints = new PendingConstraintAddCache(pool);
                 QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), 16, out PendingSetAwakenings);
@@ -399,7 +400,10 @@ namespace BepuPhysics.CollisionDetection
             {
                 //This pair uses no CCD beyond its speculative margin.
                 var continuation = overlapWorker.Batcher.Callbacks.AddDiscrete(ref pair);
-                overlapWorker.Batcher.Add(aCollidable.Shape, bCollidable.Shape, ref poseA, ref poseB, speculativeMargin, (int)continuation.Packed);
+                overlapWorker.Batcher.Add(
+                    aCollidable.Shape, bCollidable.Shape, 
+                    poseB.Position - poseA.Position, poseA.Orientation, poseB.Orientation, velocityA, velocityB, 
+                    speculativeMargin, speculativeMargin, new PairContinuation((int)continuation.Packed));
             }
             ////Pull the velocity information for all involved bodies. We will request a number of steps that will cover the motion path.
             ////number of substeps = min(maximum substep count, 1 + floor(estimated displacement / step length)), where

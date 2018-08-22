@@ -9,12 +9,14 @@ using System.Diagnostics;
 using BepuUtilities.Memory;
 using BepuUtilities.Collections;
 using System.Runtime.CompilerServices;
+using DemoContentLoader;
+using Quaternion = BepuUtilities.Quaternion;
 
 namespace Demos.Demos
 {
     public class CompoundTestDemo : Demo
     {
-        public unsafe override void Initialize(Camera camera)
+        public unsafe override void Initialize(ContentArchive content, Camera camera)
         {
             camera.Position = new Vector3(-13f, 6, -13f);
             camera.Yaw = MathHelper.Pi * 3f / 4;
@@ -52,7 +54,7 @@ namespace Demos.Demos
                         Pose = new RigidPose { Position = compoundCenter, Orientation = BepuUtilities.Quaternion.Identity },
                     };
 
-                    Simulation.Bodies.Add(ref compoundDescription);
+                    Simulation.Bodies.Add(compoundDescription);
                 }
 
                 //Build a stack of sphere grids to stress manifold reduction heuristics in a convex-ish situation.
@@ -69,7 +71,7 @@ namespace Demos.Demos
                         {
                             var localPose = new RigidPose
                             {
-                                Orientation = BepuUtilities.Quaternion.Identity,
+                                Orientation = Quaternion.Identity,
                                 Position = new Vector3(localPoseOffset, 0, localPoseOffset) + new Vector3(gridSpacing) * new Vector3(i, 0, j)
                             };
                             compoundBuilder.Add(gridShapeIndex, localPose, gridBoxInertia.InverseInertiaTensor, 1);
@@ -97,7 +99,7 @@ namespace Demos.Demos
                         //    gridDescription.LocalInertia = new BodyInertia();
                         //else
                         //    gridDescription.LocalInertia = gridInertia; 
-                        Simulation.Bodies.Add(ref bodyDescription);
+                        Simulation.Bodies.Add(bodyDescription);
                     }
                 }
 
@@ -130,22 +132,40 @@ namespace Demos.Demos
                             SpeculativeMargin = 0.1f,
                         },
                         LocalInertia = tableInertia,
-                        Pose = new RigidPose {  Orientation = BepuUtilities.Quaternion.Identity }
+                        Pose = new RigidPose { Orientation = BepuUtilities.Quaternion.Identity }
                     };
 
                     //Stack some tables.
                     {
-                        for (int i =0; i < 10; ++i)
+                        for (int i = 0; i < 10; ++i)
                         {
                             tableDescription.Pose.Position = new Vector3(10, 3 + i * 1.4f, 10);
-                            Simulation.Bodies.Add(ref tableDescription);
+                            Simulation.Bodies.Add(tableDescription);
                         }
+                    }
+                    {
+                        for (int k = 0; k < 5; ++k)
+                        {
+                            tableDescription.Pose.Position = new Vector3(64 + k * 3, 6 + k * 1.4f, 32);
+                            Simulation.Bodies.Add(tableDescription);
+                        }
+                        //for (int i = 0; i < 10; ++i)
+                        //{
+                        //    for (int j = 0; j < 20; ++j)
+                        //    {
+                        //        for (int k = 0; k < 10; ++k)
+                        //        {
+                        //            tableDescription.Pose.Position = new Vector3(32 + i * 6, 6 + j * 1.4f, 16 + k * 6);
+                        //            Simulation.Bodies.Add(tableDescription);
+                        //        }
+                        //    }
+                        //}
                     }
 
                     //Put a table on top of a sphere to stress out nonconvex reduction for divergent normals.
                     {
                         tableDescription.Pose.Position = new Vector3(10, 6, 0);
-                        Simulation.Bodies.Add(ref tableDescription);
+                        Simulation.Bodies.Add(tableDescription);
 
                         var sphereShape = new Sphere(3);
                         var sphereIndex = Simulation.Shapes.Add(sphereShape);
@@ -158,13 +178,13 @@ namespace Demos.Demos
                             },
                             Pose = new RigidPose { Position = new Vector3(10, 2, 0), Orientation = BepuUtilities.Quaternion.Identity }
                         };
-                        Simulation.Statics.Add(ref sphereDescription);
+                        Simulation.Statics.Add(sphereDescription);
                     }
 
                     //Put another table on the ground, but with a clamp-ish thing on it that generates opposing normals.
                     {
                         tableDescription.Pose.Position = new Vector3(10, 3, -10);
-                        Simulation.Bodies.Add(ref tableDescription);
+                        Simulation.Bodies.Add(tableDescription);
 
                         var clampPieceShape = new Box(2f, 0.1f, 0.3f);
                         clampPieceShape.ComputeInertia(1f, out var clampPieceInverseInertia);
@@ -193,18 +213,53 @@ namespace Demos.Demos
                                 Shape = Simulation.Shapes.Add(clamp),
                                 SpeculativeMargin = 0.1f,
                             },
-                            LocalInertia = tableInertia,
+                            LocalInertia = clampInertia,
                             Pose = new RigidPose { Position = tableDescription.Pose.Position + new Vector3(2f, 0.3f, 0), Orientation = BepuUtilities.Quaternion.Identity }
                         };
-                        Simulation.Bodies.Add(ref clampDescription);
+                        Simulation.Bodies.Add(clampDescription);
                     }
 
                 }
+
+                //Create a tree-accelerated big compound.
+                {
+                    var random = new Random(5);
+                    var treeCompoundBoxShape = new Box(0.5f, 1.5f, 1f);
+                    var treeCompoundBoxShapeIndex = Simulation.Shapes.Add(treeCompoundBoxShape);
+                    treeCompoundBoxShape.ComputeInertia(1, out var childInertia);
+                    for (int i = 0; i < 128; ++i)
+                    {
+                        RigidPose localPose;
+                        localPose.Position = new Vector3(12, 6, 12) * (0.5f * new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble()) - Vector3.One);
+                        float orientationLengthSquared;
+                        do
+                        {
+                            localPose.Orientation = new Quaternion((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble());
+                        }
+                        while ((orientationLengthSquared = localPose.Orientation.LengthSquared()) < 1e-9f);
+                        Quaternion.Scale(localPose.Orientation, 1f / MathF.Sqrt(orientationLengthSquared), out localPose.Orientation);
+                        //Quaternion.CreateFromAxisAngle(new Vector3(1, 0, 0), MathF.PI, out localPose.Orientation);
+
+                        compoundBuilder.Add(treeCompoundBoxShapeIndex, localPose, childInertia.InverseInertiaTensor, 1);
+                    }
+                    compoundBuilder.BuildDynamicCompound(out var children, out var inertia, out var center);
+                    compoundBuilder.Reset();
+
+                    var compound = new BigCompound(children, Simulation.Shapes, BufferPool);
+                    //var compound = new Compound(children);
+                    var compoundIndex = Simulation.Shapes.Add(compound);
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        Simulation.Bodies.Add(new BodyDescription(new Vector3(0, 4 + 5 * i, 32), inertia, compoundIndex, 0.1f, new BodyActivityDescription(0.01f)));
+                    }
+
+
+                }
             }
-            
+
             //Prevent stuff from falling into the infinite void.
             {
-                var boxShape = new Box(100, 1, 100);
+                var boxShape = new Box(256, 1, 256);
                 var groundShapeIndex = Simulation.Shapes.Add(boxShape);
                 var groundDescription = new StaticDescription
                 {
@@ -215,9 +270,18 @@ namespace Demos.Demos
                     },
                     Pose = new RigidPose { Position = new Vector3(0, 0, 0), Orientation = BepuUtilities.Quaternion.Identity }
                 };
-                Simulation.Statics.Add(ref groundDescription);
+                Simulation.Statics.Add(groundDescription);
             }
+            const int planeWidth = 48;
+            const int planeHeight = 48;
+            MeshDemo.CreateDeformedPlane(planeWidth, planeHeight,
+                (int x, int y) =>
+                {
+                    Vector2 offsetFromCenter = new Vector2(x - planeWidth / 2, y - planeHeight / 2);
+                    return new Vector3(offsetFromCenter.X, MathF.Cos(x / 4f) * MathF.Sin(y / 4f) - 0.01f * offsetFromCenter.LengthSquared(), offsetFromCenter.Y);
+                }, new Vector3(2, 1, 2), BufferPool, out var planeMesh);
+            Simulation.Statics.Add(new StaticDescription(new Vector3(64, 4, 32), Quaternion.CreateFromAxisAngle(new Vector3(0, 1, 0), MathF.PI / 2),
+                new CollidableDescription(Simulation.Shapes.Add(planeMesh), 0.1f)));
         }
-
     }
 }

@@ -15,6 +15,8 @@ using DemoRenderer.UI;
 using DemoRenderer.Constraints;
 using System.Threading;
 using Demos.SpecializedTests;
+using DemoContentLoader;
+using Demos.Demos;
 
 namespace Demos
 {
@@ -66,7 +68,7 @@ namespace Demos
             {
             }
         }
-        public unsafe override void Initialize(Camera camera)
+        public unsafe override void Initialize(ContentArchive content, Camera camera)
         {
             camera.Position = new Vector3(-20f, 13, -20f);
             camera.Yaw = MathHelper.Pi * 3f / 4;
@@ -74,7 +76,7 @@ namespace Demos
             Simulation = Simulation.Create(BufferPool, new NoCollisionCallbacks());
             //Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
 
-            var box = new Box(0.5f, 1.5f,1f);
+            var box = new Box(0.5f, 1.5f, 1f);
             var capsule = new Capsule(0, 0.5f);
             var sphere = new Sphere(0.5f);
             var boxIndex = Simulation.Shapes.Add(box);
@@ -136,7 +138,7 @@ namespace Demos
                                     Shape = shapeIndex
                                 }
                             };
-                            Simulation.Bodies.Add(ref bodyDescription);
+                            Simulation.Bodies.Add(bodyDescription);
                         }
                         else
                         {
@@ -154,12 +156,24 @@ namespace Demos
                                     Shape = shapeIndex
                                 }
                             };
-                            Simulation.Statics.Add(ref staticDescription);
+                            Simulation.Statics.Add(staticDescription);
                         }
 
                     }
                 }
             }
+
+            const int planeWidth = 128;
+            const int planeHeight = 128;
+            MeshDemo.CreateDeformedPlane(planeWidth, planeHeight,
+                (int x, int y) =>
+                {
+                    return new Vector3(x - planeWidth / 2, 1 * MathF.Cos(x / 4f) * MathF.Sin(y / 4f), y - planeHeight / 2);
+                }, new Vector3(1, 3, 1), BufferPool, out var planeMesh);
+            Simulation.Statics.Add(new StaticDescription(
+                new Vector3(0, -10, 0), BepuUtilities.Quaternion.CreateFromAxisAngle(new Vector3(0, 1, 0), MathF.PI / 4),
+                new CollidableDescription(Simulation.Shapes.Add(planeMesh), 0.1f)));
+
             int raySourceCount = 3;
             QuickList<QuickList<TestRay, Buffer<TestRay>>, Buffer<QuickList<TestRay, Buffer<TestRay>>>>.Create(BufferPool.SpecializeFor<QuickList<TestRay, Buffer<TestRay>>>(), raySourceCount, out raySources);
             raySources.Count = raySourceCount;
@@ -364,22 +378,6 @@ namespace Demos
         Buffer<RayJob> jobs;
 
 
-        unsafe struct RayTester : IBroadPhaseBatchedRayTester
-        {
-            public int* IntersectionCount;
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public void RayTest(CollidableReference collidable, ref RaySource rays)
-            {
-                *IntersectionCount += rays.RayCount;
-            }
-
-            public void RayTest(CollidableReference collidable, RayData* rayData, float* maximumT)
-            {
-                ++*IntersectionCount;
-            }
-        }
-
-
         unsafe struct HitHandler : IRayHitHandler
         {
             public Buffer<RayHit> Hits;
@@ -521,7 +519,7 @@ namespace Demos
                 {
                     var end = ray.Origin + ray.Direction * result.T;
                     var diffuseLight = Vector3.Dot(result.Normal, new Vector3(0.57735f));
-                    if(diffuseLight < 0)
+                    if (diffuseLight < 0)
                     {
                         diffuseLight = -0.5f * diffuseLight;
                     }

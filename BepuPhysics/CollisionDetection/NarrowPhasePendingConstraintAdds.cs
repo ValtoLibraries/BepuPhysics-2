@@ -14,8 +14,6 @@ using BepuPhysics.Constraints.Contact;
 
 namespace BepuPhysics.CollisionDetection
 {
-    //TODO: This class's massive switches and per-type hardcoding are completely impractical in the long run. We have to change it somehow, even if it means accepting slightly more overhead.
-    //We can likely reduce at least some of the hardcoding without any overhead at all.
     /// <summary>
     /// When notified of a new constraint, immediately adds it to the solver.
     /// </summary>
@@ -123,14 +121,13 @@ namespace BepuPhysics.CollisionDetection
                 ref var handles = ref Unsafe.As<TBodyHandles, int>(ref constraint.BodyHandles);
                 while (!simulation.Solver.TryAllocateInBatch(
                     default(TDescription).ConstraintTypeId, batchIndex,
-                    ref Unsafe.As<TBodyHandles, int>(ref constraint.BodyHandles),
-                    typeof(TBodyHandles) == typeof(TwoBodyHandles) ? 2 : 1,
+                    ref handles, typeof(TBodyHandles) == typeof(TwoBodyHandles) ? 2 : 1,
                     out constraintHandle, out reference))
                 {
                     //If a batch index failed, just try the next one. This is guaranteed to eventually work.
                     ++batchIndex;
                 }
-                simulation.Solver.ApplyDescription(ref reference, ref constraint.ConstraintDescription);
+                simulation.Solver.ApplyDescriptionWithoutWaking(ref reference, ref constraint.ConstraintDescription);
                 ref var aLocation = ref simulation.Bodies.HandleToLocation[handles];
                 Debug.Assert(aLocation.SetIndex == 0, "By the time we flush new constraints into the solver, all associated islands should be awake.");
                 simulation.Bodies.AddConstraint(aLocation.Index, constraintHandle, 0);
@@ -153,7 +150,7 @@ namespace BepuPhysics.CollisionDetection
                 if (list.Buffer.Allocated)
                 {
                     ref var start = ref Unsafe.As<byte, PendingConstraint<TBodyHandles, TDescription, TContactImpulses>>(ref *list.Buffer.Memory);
-                    Debug.Assert(list.Buffer.Length > Unsafe.SizeOf<PendingConstraint<TBodyHandles, TDescription, TContactImpulses>>() * list.Count);
+                    Debug.Assert(list.Buffer.Length >= Unsafe.SizeOf<PendingConstraint<TBodyHandles, TDescription, TContactImpulses>>() * list.Count);
                     Debug.Assert(list.ByteCount == Unsafe.SizeOf<PendingConstraint<TBodyHandles, TDescription, TContactImpulses>>() * list.Count);
                     ref var speculativeBatchIndicesForType = ref speculativeBatchIndices[narrowPhaseConstraintTypeId];
                     for (int i = 0; i < list.Count; ++i)

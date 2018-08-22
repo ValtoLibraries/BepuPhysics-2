@@ -12,9 +12,9 @@ namespace BepuPhysics.Trees
     {
         unsafe void TestLeaf(int leafIndex, ref float maximumT);
     }
-    partial class Tree
+    partial struct Tree
     {
-        internal unsafe void Sweep<TLeafTester>(int nodeIndex, in Vector3 expansion, in Vector3 origin, in Vector3 direction, TreeRay* treeRay, int* stack, ref TLeafTester leafTester) where TLeafTester : ISweepLeafTester
+        unsafe void Sweep<TLeafTester>(int nodeIndex, in Vector3 expansion, in Vector3 origin, in Vector3 direction, TreeRay* treeRay, int* stack, ref TLeafTester leafTester) where TLeafTester : ISweepLeafTester
         {
             Debug.Assert((nodeIndex >= 0 && nodeIndex < nodeCount) || (Encode(nodeIndex) >= 0 && Encode(nodeIndex) < leafCount));
             Debug.Assert(leafCount >= 2, "This implementation assumes all nodes are filled.");
@@ -104,7 +104,7 @@ namespace BepuPhysics.Trees
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void ConvertBoxToCentroidWithExtent(in Vector3 min, in Vector3 max, out Vector3 origin, out Vector3 expansion)
+        public static void ConvertBoxToCentroidWithExtent(in Vector3 min, in Vector3 max, out Vector3 origin, out Vector3 expansion)
         {
             var halfMin = 0.5f * min;
             var halfMax = 0.5f * max;

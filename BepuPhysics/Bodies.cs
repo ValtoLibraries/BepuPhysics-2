@@ -101,17 +101,17 @@ namespace BepuPhysics
             this.awakener = awakener;
         }
 
-        void AddCollidableToBroadPhase(int bodyHandle, ref RigidPose pose, ref BodyInertia localInertia, ref Collidable collidable)
+        void AddCollidableToBroadPhase(int bodyHandle, in RigidPose pose, in BodyInertia localInertia, ref Collidable collidable)
         {
             //This body has a collidable; stick it in the broadphase.
             //Note that we have to calculate an initial bounding box for the broad phase to be able to insert it efficiently.
             //(In the event of batch adds, you'll want to use batched AABB calculations or just use cached values.)
             //Note: the min and max here are in absolute coordinates, which means this is a spot that has to be updated in the event that positions use a higher precision representation.
-            shapes.UpdateBounds(ref pose, ref collidable.Shape, out var bodyBounds);
+            shapes.UpdateBounds(pose, ref collidable.Shape, out var bodyBounds);
             //Note that new body collidables are always assumed to be active.
             collidable.BroadPhaseIndex =
                 broadPhase.AddActive(
-                    new CollidableReference(IsKinematic(ref localInertia) ? CollidableMobility.Kinematic : CollidableMobility.Dynamic, bodyHandle),
+                    new CollidableReference(IsKinematic(localInertia) ? CollidableMobility.Kinematic : CollidableMobility.Dynamic, bodyHandle),
                     ref bodyBounds);
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -137,7 +137,7 @@ namespace BepuPhysics
         /// </summary>
         /// <param name="description">Description of the body to add.</param>
         /// <returns>Handle of the created body.</returns>
-        public unsafe int Add(ref BodyDescription description)
+        public unsafe int Add(in BodyDescription description)
         {
             Debug.Assert(HandleToLocation.Allocated, "The backing memory of the bodies set should be initialized before use.");
             var handle = HandlePool.Take();
@@ -152,12 +152,12 @@ namespace BepuPhysics
 
             //All new bodies are active for simplicity. Someday, it may be worth offering an optimized path for inactives, but it adds complexity.
             //(Directly adding inactive bodies can be helpful in some networked open world scenarios.)
-            var index = ActiveSet.Add(ref description, handle, MinimumConstraintCapacityPerBody, pool);
+            var index = ActiveSet.Add(description, handle, MinimumConstraintCapacityPerBody, pool);
             HandleToLocation[handle] = new BodyLocation { SetIndex = 0, Index = index };
 
             if (description.Collidable.Shape.Exists)
             {
-                AddCollidableToBroadPhase(handle, ref description.Pose, ref description.LocalInertia, ref ActiveSet.Collidables[index]);
+                AddCollidableToBroadPhase(handle, description.Pose, description.LocalInertia, ref ActiveSet.Collidables[index]);
             }
             return handle;
         }
@@ -259,7 +259,7 @@ namespace BepuPhysics
         /// </summary>
         /// <param name="inertia">Body inertia to analyze.</param>
         /// <returns>True if all components of inverse mass and inertia are zero, false otherwise.</returns>
-        public static bool IsKinematic(ref BodyInertia inertia)
+        public static bool IsKinematic(in BodyInertia inertia)
         {
             return inertia.InverseMass == 0 &&
                    inertia.InverseInertiaTensor.XX == 0 &&
@@ -273,7 +273,7 @@ namespace BepuPhysics
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void UpdateBroadPhaseKinematicState(int handle, ref BodyLocation location, ref BodySet set)
         {
-            Debug.Assert(set.Activity[location.Index].Kinematic == IsKinematic(ref set.LocalInertias[location.Index]),
+            Debug.Assert(set.Activity[location.Index].Kinematic == IsKinematic(set.LocalInertias[location.Index]),
                 "Activity's kinematic state should be updated prior to the broad phase update call. This function simply shares its determination.");
             ref var collidable = ref set.Collidables[location.Index];
             var kinematic = set.Activity[location.Index].Kinematic;
@@ -311,7 +311,7 @@ namespace BepuPhysics
             //Note that the HandleToLocation slot reference is still valid; it may have been updated, but handle slots don't move.
             ref var set = ref Sets[location.SetIndex];
             set.LocalInertias[location.Index] = inertia;
-            set.Activity[location.Index].Kinematic = IsKinematic(ref inertia);
+            set.Activity[location.Index].Kinematic = IsKinematic(inertia);
             UpdateBroadPhaseKinematicState(handle, ref location, ref set);
         }
 
@@ -324,7 +324,7 @@ namespace BepuPhysics
                 if (newShape.Exists)
                 {
                     //Add a collidable to the simulation for the new shape.
-                    AddCollidableToBroadPhase(handle, ref set.Poses[activeBodyIndex], ref set.LocalInertias[activeBodyIndex], ref set.Collidables[activeBodyIndex]);
+                    AddCollidableToBroadPhase(handle, set.Poses[activeBodyIndex], set.LocalInertias[activeBodyIndex], ref set.Collidables[activeBodyIndex]);
                 }
                 else
                 {
@@ -373,7 +373,7 @@ namespace BepuPhysics
             ref var set = ref Sets[location.SetIndex];
             ref var collidable = ref set.Collidables[location.Index];
             var oldShape = collidable.Shape;
-            set.ApplyDescriptionByIndex(location.Index, ref description);
+            set.ApplyDescriptionByIndex(location.Index, description);
             UpdateForShapeChange(handle, location.Index, oldShape, description.Collidable.Shape);
             UpdateBroadPhaseKinematicState(handle, ref location, ref set);
         }
@@ -405,6 +405,36 @@ namespace BepuPhysics
             Debug.Assert(set.Count <= set.IndexToHandle.Length);
             Debug.Assert(location.Index >= 0 && location.Index < set.Count, "Body index must fall within the existing body set.");
             Debug.Assert(set.IndexToHandle[location.Index] == handle, "Handle->index must match index->handle map.");
+        }
+
+        [Conditional("CHECKMATH")]
+        internal void ValidateMotionStates()
+        {
+            for (int i = 0; i < Sets.Length; ++i)
+            {
+                ref var set = ref Sets[i];
+                if (set.Allocated)
+                {
+                    for (int j = 0; j < set.Count; ++j)
+                    {
+                        ref var pose = ref set.Poses[j];
+                        ref var velocity = ref set.Velocities[j];
+                        try
+                        {
+                            pose.Position.Validate();
+                            pose.Orientation.Validate();
+                            velocity.Linear.Validate();
+                            velocity.Angular.Validate();
+                        }
+                        catch
+                        {
+                            Console.WriteLine($"Validation failed on body {i} of set {j}. Position: {pose.Position}, orientation: {pose.Orientation}, linear: {velocity.Linear}, angular: {velocity.Angular}");
+                            throw;
+                        }
+
+                    }
+                }
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -466,7 +496,7 @@ namespace BepuPhysics
         {
             Debug.Assert(count >= 0 && count <= Vector<float>.Count);
             //Grab the base references for the body indices. Note that we make use of the references memory layout again.
-            ref var baseIndexA = ref Unsafe.As<Vector<int>, int>(ref references);            
+            ref var baseIndexA = ref Unsafe.As<Vector<int>, int>(ref references);
             for (int i = 0; i < count; ++i)
             {
                 GatherInertiaForBody(ref Inertias[Unsafe.Add(ref baseIndexA, i)], ref GatherScatter.GetOffsetInstance(ref inertiaA, i));
@@ -519,7 +549,71 @@ namespace BepuPhysics
             //In order to support other absolute positions, we'll need alternate implementations of this and other functions.
             //But for the most part, we don't want to pay the overhead of an abstract invocation within the inner loop of the solver. 
             //Given the current limits of C# and the compiler, the best option seems to be conditional compilation.
-            Vector3Wide.Subtract(ref positionB, ref positionA, out offsetB);
+            Vector3Wide.Subtract(positionB, positionA, out offsetB);
+        }
+
+        /// <summary>
+        /// Gathers inertia and pose information for two body bundles into AOSOA bundles.
+        /// </summary>
+        /// <param name="references">Active body indices being gathered.</param>
+        /// <param name="count">Number of body pairs in the bundle.</param>
+        /// <param name="orientationA">Gathered orientation of body A.</param>
+        /// <param name="orientationB">Gathered orientation of body B.</param>
+        /// <param name="inertiaA">Gathered inertia of body A.</param>
+        /// <param name="inertiaB">Gathered inertia of body B.</param>
+        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void GatherInertiaAndPose(ref TwoBodyReferences references, int count,
+            out QuaternionWide orientationA, out QuaternionWide orientationB,
+            out Symmetric3x3Wide inverseInertiaA, out Symmetric3x3Wide inverseInertiaB)
+        {
+            Debug.Assert(count >= 0 && count <= Vector<float>.Count);
+            //Grab the base references for the body indices. Note that we make use of the references memory layout again.
+            ref var baseIndexA = ref Unsafe.As<Vector<int>, int>(ref references.IndexA);
+            ref var baseIndexB = ref Unsafe.As<Vector<int>, int>(ref references.IndexB);
+
+            ref var poses = ref ActiveSet.Poses;
+            for (int i = 0; i < count; ++i)
+            {
+                ref var indexA = ref Unsafe.Add(ref baseIndexA, i);
+                QuaternionWide.WriteFirst(poses[indexA].Orientation, ref GatherScatter.GetOffsetInstance(ref orientationA, i));
+                Symmetric3x3Wide.WriteFirst(Inertias[indexA].InverseInertiaTensor, ref GatherScatter.GetOffsetInstance(ref inverseInertiaA, i));
+
+                ref var indexB = ref Unsafe.Add(ref baseIndexB, i);
+                QuaternionWide.WriteFirst(poses[indexB].Orientation, ref GatherScatter.GetOffsetInstance(ref orientationB, i));
+                Symmetric3x3Wide.WriteFirst(Inertias[indexB].InverseInertiaTensor, ref GatherScatter.GetOffsetInstance(ref inverseInertiaB, i));
+            }
+        }
+
+        /// <summary>
+        /// Gathers inertia and pose information for a body bundle into AOSOA bundles.
+        /// </summary>
+        /// <param name="references">Active body indices being gathered.</param>
+        /// <param name="count">Number of body pairs in the bundle.</param>
+        /// <param name="position">Gathered absolute position of the body.</param>
+        /// <param name="orientation">Gathered orientation of the body.</param>
+        /// <param name="inertia">Gathered inertia of the body.</param>
+        //[MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void GatherInertiaAndPose(ref Vector<int> references, int count,
+            out Vector3Wide position, out QuaternionWide orientation, out BodyInertias inertia)
+        {
+            //TODO: This function and its users (which should be relatively few) is a problem for large world position precision.
+            //It directly reports the position, thereby infecting vectorized logic with the high precision representation.
+            //You might be able to redesign the users of this function to not need it, but that comes with its own difficulties
+            //(for example, making the grab motor rely on having its goal offset updated every frame by the user).
+            Debug.Assert(count >= 0 && count <= Vector<float>.Count);
+            //Grab the base references for the body indices. Note that we make use of the references memory layout again.
+            ref var baseIndex = ref Unsafe.As<Vector<int>, int>(ref references);
+
+            ref var poses = ref ActiveSet.Poses;
+            for (int i = 0; i < count; ++i)
+            {
+                ref var indexA = ref Unsafe.Add(ref baseIndex, i);
+                ref var targetPositionSlotA = ref GatherScatter.GetOffsetInstance(ref position, i);
+                ref var targetOrientationSlotA = ref GatherScatter.GetOffsetInstance(ref orientation, i);
+                ref var targetInertiaSlotA = ref GatherScatter.GetOffsetInstance(ref inertia, i);
+                GatherPoseForBody(ref poses[indexA], ref targetPositionSlotA, ref targetOrientationSlotA);
+                GatherInertiaForBody(ref Inertias[indexA], ref targetInertiaSlotA);
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -614,7 +708,7 @@ namespace BepuPhysics
         /// <param name="references">Active set indices of the bodies to scatter velocity data to.</param>
         /// <param name="count">Number of body pairs in the bundle.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static unsafe void ScatterVelocities(ref BodyVelocities sourceVelocitiesA, ref BodyVelocities sourceVelocitiesB, ref Buffer<BodyVelocity> targetVelocities, 
+        public static unsafe void ScatterVelocities(ref BodyVelocities sourceVelocitiesA, ref BodyVelocities sourceVelocitiesB, ref Buffer<BodyVelocity> targetVelocities,
             ref TwoBodyReferences references, int count)
         {
             Debug.Assert(count >= 0 && count <= Vector<float>.Count);

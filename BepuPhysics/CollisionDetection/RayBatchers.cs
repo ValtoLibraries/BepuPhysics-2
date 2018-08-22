@@ -77,8 +77,8 @@ namespace BepuPhysics.CollisionDetection
             {
                 //TODO: Note that this order implies we test against the active tree before the static tree. This should be revisited- there are many simulations in which 
                 //testing the static tree first would be better because of more conservative maximumT values. Not immediately clear which case is dominant.
-                batcher.TestRays(broadPhase.ActiveTree, ref activeTester);
-                batcher.TestRays(broadPhase.StaticTree, ref staticTester);
+                batcher.TestRays(ref broadPhase.ActiveTree, ref activeTester);
+                batcher.TestRays(ref broadPhase.StaticTree, ref staticTester);
                 batcher.ResetRays();
             }
         }
@@ -91,8 +91,8 @@ namespace BepuPhysics.CollisionDetection
             if (batcher.RayCount > 0)
             {
                 //TODO: Similar to Add- order matters here for performance. Need testing to determine which order tends to be better.
-                batcher.TestRays(broadPhase.ActiveTree, ref activeTester);
-                batcher.TestRays(broadPhase.StaticTree, ref staticTester);
+                batcher.TestRays(ref broadPhase.ActiveTree, ref activeTester);
+                batcher.TestRays(ref broadPhase.StaticTree, ref staticTester);
                 batcher.ResetRays();
             }
         }
@@ -157,7 +157,7 @@ namespace BepuPhysics.CollisionDetection
                 if (HitHandler.HitHandler.AllowTest(reference))
                 {
                     Simulation.GetPoseAndShape(reference, out var pose, out var shape);
-                    if (Simulation.Shapes[shape.Type].RayTest(shape.Index, *pose, rayData->Origin, rayData->Direction, out var t, out var normal) && t < *maximumT)
+                    if (Simulation.Shapes[shape.Type].RayTest(shape.Index, *pose, rayData->Origin, rayData->Direction, *maximumT, out var t, out var normal) && t < *maximumT)
                     {
                         HitHandler.HitHandler.OnRayHit(*rayData, ref *maximumT, t, normal, reference);
                     }

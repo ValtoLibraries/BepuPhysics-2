@@ -1,6 +1,7 @@
 ﻿using BepuPhysics;
 using BepuPhysics.Collidables;
 using BepuUtilities;
+using DemoContentLoader;
 using DemoRenderer;
 using DemoRenderer.UI;
 using DemoUtilities;
@@ -16,9 +17,9 @@ namespace Demos.Demos
     /// </summary>
     public class PyramidDemo : Demo
     {
-        public unsafe override void Initialize(Camera camera)
+        public unsafe override void Initialize(ContentArchive content, Camera camera)
         {
-            camera.Position = new Vector3(-30, 8, -60);
+            camera.Position = new Vector3(-30, 8, -110);
             camera.Yaw = MathHelper.Pi * 3f / 4;
 
             Simulation = Simulation.Create(BufferPool, new TestCallbacks());
@@ -27,7 +28,7 @@ namespace Demos.Demos
             var boxShape = new Box(1, 1, 1);
             boxShape.ComputeInertia(1, out var boxInertia);
             var boxIndex = Simulation.Shapes.Add(boxShape);
-            const int pyramidCount = 20;
+            const int pyramidCount = 40;
             for (int pyramidIndex = 0; pyramidIndex < pyramidCount; ++pyramidIndex)
             {
                 const int rowCount = 20;
@@ -50,12 +51,12 @@ namespace Demos.Demos
                             Activity = new BodyActivityDescription { MinimumTimestepCountUnderThreshold = 32, SleepThreshold = .01f },
                             Collidable = new CollidableDescription { Shape = boxIndex, SpeculativeMargin = .1f }
                         };
-                        Simulation.Bodies.Add(ref bodyDescription);
+                        Simulation.Bodies.Add(bodyDescription);
                     }
                 }
             }
 
-            var staticShape = new Box(200, 1, 200);
+            var staticShape = new Box(1500, 1, 1500);
             var staticShapeIndex = Simulation.Shapes.Add(staticShape);
 
             var staticDescription = new StaticDescription
@@ -72,7 +73,7 @@ namespace Demos.Demos
                     Orientation = BepuUtilities.Quaternion.Identity
                 }
             };
-            Simulation.Statics.Add(ref staticDescription);
+            Simulation.Statics.Add(staticDescription);
 
         }
 
@@ -99,14 +100,14 @@ namespace Demos.Demos
                     LocalInertia = bulletInertia,
                     Pose = new RigidPose
                     {
-                        Position = new Vector3(0, 8, -100),
+                        Position = new Vector3(0, 8, -130),
                         Orientation = BepuUtilities.Quaternion.Identity
                     },
                     Activity = new BodyActivityDescription { MinimumTimestepCountUnderThreshold = 32, SleepThreshold = .01f },
                     Collidable = new CollidableDescription { Shape = bulletShapeIndex, SpeculativeMargin = .1f },
                     Velocity = new BodyVelocity { Linear = new Vector3(0, 0, 150) }
                 };
-                Simulation.Bodies.Add(ref bodyDescription);
+                Simulation.Bodies.Add(bodyDescription);
             }
             base.Update(input, dt);
         }

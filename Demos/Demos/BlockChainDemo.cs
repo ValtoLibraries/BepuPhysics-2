@@ -3,6 +3,7 @@ using BepuPhysics.Collidables;
 using BepuPhysics.CollisionDetection;
 using BepuPhysics.Constraints;
 using BepuUtilities;
+using DemoContentLoader;
 using DemoRenderer;
 using DemoRenderer.UI;
 using DemoUtilities;
@@ -21,7 +22,7 @@ namespace Demos.Demos
     /// </summary>
     public class BlockChainDemo : Demo
     {
-        public unsafe override void Initialize(Camera camera)
+        public unsafe override void Initialize(ContentArchive content, Camera camera)
         {
             camera.Position = new Vector3(-30, 8, -60);
             camera.Yaw = MathHelper.Pi * 3f / 4;
@@ -53,9 +54,8 @@ namespace Demos.Demos
                         },
                         Activity = new BodyActivityDescription { MinimumTimestepCountUnderThreshold = 32, SleepThreshold = .01f },
                         Collidable = new CollidableDescription { Shape = boxIndex, SpeculativeMargin = .1f },
-                        Velocity = new BodyVelocity { Linear = blockIndex == blocksPerChain - 1 ? new Vector3() : new Vector3(0, -1, 0) }
                     };
-                    blockHandles[blockIndex] = Simulation.Bodies.Add(ref bodyDescription);
+                    blockHandles[blockIndex] = Simulation.Bodies.Add(bodyDescription);
                 }
                 //Build the chains.
                 for (int i = 1; i < blocksPerChain; ++i)
@@ -64,7 +64,7 @@ namespace Demos.Demos
                     {
                         LocalOffsetA = new Vector3(0, 1f, 0),
                         LocalOffsetB = new Vector3(0, -1f, 0),
-                        SpringSettings = new SpringSettings(30, 1)
+                        SpringSettings = new SpringSettings(30, 5)
                     };
                     Simulation.Solver.Add(blockHandles[i - 1], blockHandles[i], ref ballSocket);
                 }
@@ -87,7 +87,7 @@ namespace Demos.Demos
                     Orientation = BepuUtilities.Quaternion.Identity
                 }
             };
-            Simulation.Statics.Add(ref staticDescription);
+            Simulation.Statics.Add(staticDescription);
 
             //Build the coin description for the ponz-I mean ICO.
             var coinShape = new Sphere(1f); //TODO: Obviously, when cylinders get added, this needs to be changed.
@@ -123,7 +123,7 @@ namespace Demos.Demos
 
                     coinDescription.Pose.Position = origin + direction * 10 * (float)random.NextDouble();
                     coinDescription.Velocity.Linear = direction * (5 + 30 * (float)random.NextDouble());
-                    Simulation.Bodies.Add(ref coinDescription);
+                    Simulation.Bodies.Add(coinDescription);
                 }
             }
             base.Update(input, dt);

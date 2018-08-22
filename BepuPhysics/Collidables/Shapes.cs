@@ -28,19 +28,38 @@ namespace BepuPhysics.Collidables
         /// Gets whether this shape batch's contained type potentially contains children of different types.
         /// </summary>
         public bool Compound { get; protected set; }
+        
+        protected abstract void Dispose(int index, BufferPool pool);
+        protected abstract void RemoveAndDisposeChildren(int index, Shapes shapes, BufferPool pool);
 
-        [Conditional("DEBUG")]
-        protected abstract void ValidateRemoval(int index);
-
-        public void RemoveAt(int index)
+        public void Remove(int index)
         {
-            ValidateRemoval(index);
             idPool.Return(index, pool.SpecializeFor<int>());
         }
 
+        public void RemoveAndDispose(int index, BufferPool pool)
+        {
+            Dispose(index, pool);
+            Remove(index);
+        }
+
+        public void RecursivelyRemoveAndDispose(int index, Shapes shapes, BufferPool pool)
+        {
+            RemoveAndDisposeChildren(index, shapes, pool);
+            RemoveAndDispose(index, pool);
+        }
+
         public abstract void ComputeBounds(ref BoundingBoxBatcher batcher);
-        public abstract void ComputeBounds(int shapeIndex, ref RigidPose pose, out Vector3 min, out Vector3 max);
-        public abstract bool RayTest(int shapeIndex, in RigidPose pose, in Vector3 origin, in Vector3 direction, out float t, out Vector3 normal);
+        public abstract void ComputeBounds(int shapeIndex, in RigidPose pose, out Vector3 min, out Vector3 max);
+        internal virtual void ComputeBounds(int shapeIndex, in BepuUtilities.Quaternion orientation, out float maximumRadius, out float maximumAngularExpansion, out Vector3 min, out Vector3 max)
+        {
+            maximumRadius = 0;
+            maximumAngularExpansion = 0;
+            min = default;
+            max = default;
+            throw new InvalidOperationException("Nonconvex shapes are not required to have a maximum ardius or angular expansion implementation. This should only ever be called on convexes.");
+        }
+        public abstract bool RayTest(int shapeIndex, in RigidPose pose, in Vector3 origin, in Vector3 direction, float maximumT, out float t, out Vector3 normal);
         public abstract void RayTest<TRayHitHandler>(int shapeIndex, in RigidPose rigidPose, ref RaySource rays, ref TRayHitHandler hitHandler) where TRayHitHandler : struct, IShapeRayHitHandler;
 
         /// <summary>
@@ -106,16 +125,7 @@ namespace BepuPhysics.Collidables
             InternalResize(initialShapeCount, 0);
             IdPool<Buffer<int>>.Create(pool.SpecializeFor<int>(), initialShapeCount, out idPool);
         }
-
-        protected override void ValidateRemoval(int index)
-        {
-            Debug.Assert(!SpanHelper.IsZeroed(ref shapes[index]),
-                "Either a shape was default constructed (which is almost certainly invalid), or this is attempting to remove a shape that was already removed.");
-            //Don't have to actually clear out the shape set since everything is blittable. For debug purposes, we do, just to catch invalid usages.
-            shapes[index] = default;
-        }
-
-
+        
         //Note that shapes cannot be moved; there is no reference to the collidables using them, so we can't correct their indices.
         //But that's fine- we never directly iterate over the shapes set anyway.
         //(This doesn't mean that it's impossible to compact the shape set- it just requires doing so by iterating over collidables.)
@@ -126,7 +136,6 @@ namespace BepuPhysics.Collidables
             {
                 InternalResize(shapeIndex + 1, shapes.Length);
             }
-            Debug.Assert(SpanHelper.IsZeroed(ref shapes[shapeIndex]), "In debug mode, the slot a shape is stuck into should be cleared. If it's not, it is already in use.");
             shapes[shapeIndex] = shape;
             return shapeIndex;
         }
@@ -196,22 +205,39 @@ namespace BepuPhysics.Collidables
         {
         }
 
+        protected override void Dispose(int index, BufferPool pool)
+        {
+            //Any convex shape with an associated Wide type doesn't have any internal resources to dispose.
+        }
+
+        protected override void RemoveAndDisposeChildren(int index, Shapes shapes, BufferPool pool)
+        {
+            //And they don't have any children.
+        }
+
         public override void ComputeBounds(ref BoundingBoxBatcher batcher)
         {
             batcher.ExecuteConvexBatch(this);
         }
 
-        public override void ComputeBounds(int shapeIndex, ref RigidPose pose, out Vector3 min, out Vector3 max)
+        public override void ComputeBounds(int shapeIndex, in RigidPose pose, out Vector3 min, out Vector3 max)
         {
             shapes[shapeIndex].ComputeBounds(pose.Orientation, out min, out max);
             min += pose.Position;
             max += pose.Position;
         }
 
-        public override bool RayTest(int shapeIndex, in RigidPose pose, in Vector3 origin, in Vector3 direction, out float t, out Vector3 normal)
+        internal override void ComputeBounds(int shapeIndex, in BepuUtilities.Quaternion orientation, out float maximumRadius, out float angularExpansion, out Vector3 min, out Vector3 max)
         {
-            return shapes[shapeIndex].RayTest(pose, origin, direction, out t, out normal);
-        }        
+            ref var shape = ref shapes[shapeIndex];
+            shape.ComputeBounds(orientation, out min, out max);
+            shape.ComputeAngularExpansionData(out maximumRadius, out angularExpansion);
+        }
+
+        public override bool RayTest(int shapeIndex, in RigidPose pose, in Vector3 origin, in Vector3 direction, float maximumT, out float t, out Vector3 normal)
+        {
+            return shapes[shapeIndex].RayTest(pose, origin, direction, out t, out normal) && t <= maximumT;
+        }
 
         public override void RayTest<TRayHitHandler>(int index, in RigidPose pose, ref RaySource rays, ref TRayHitHandler hitHandler)
         {
@@ -227,17 +253,41 @@ namespace BepuPhysics.Collidables
         }
     }
 
-    public class BroadcastableShapeBatch<TShape, TShapeWide> : ConvexShapeBatch<TShape, TShapeWide>
-        where TShape : struct, IBroadcastableShape<TShape, TShapeWide>
-        where TShapeWide : struct, IShapeWide<TShape>
+    public class MeshShapeBatch<TShape> : ShapeBatch<TShape> where TShape : struct, IMeshShape
     {
-        public BroadcastableShapeBatch(BufferPool pool, int initialShapeCount) : base(pool, initialShapeCount)
+        public MeshShapeBatch(BufferPool pool, int initialShapeCount) : base(pool, initialShapeCount)
         {
         }
 
-        public override void RayTest<TRayHitHandler>(int index, in RigidPose pose, ref RaySource rays, ref TRayHitHandler hitHandler)
+        protected override void Dispose(int index, BufferPool pool)
         {
-            WideRayTester.Test<RaySource, TShape, TShapeWide, TRayHitHandler>(ref shapes[index], pose, ref rays, ref hitHandler);
+            shapes[index].Dispose(pool);
+        }
+
+        protected override void RemoveAndDisposeChildren(int index, Shapes shapes, BufferPool pool)
+        {
+            //Meshes don't have any shape-registered children.
+        }
+
+        public override void ComputeBounds(ref BoundingBoxBatcher batcher)
+        {
+            batcher.ExecuteMeshBatch(this);
+        }
+
+        public override void ComputeBounds(int shapeIndex, in RigidPose pose, out Vector3 min, out Vector3 max)
+        {
+            shapes[shapeIndex].ComputeBounds(pose.Orientation, out min, out max);
+            min += pose.Position;
+            max += pose.Position;
+        }
+        public override bool RayTest(int shapeIndex, in RigidPose pose, in Vector3 origin, in Vector3 direction, float maximumT, out float t, out Vector3 normal)
+        {
+            return shapes[shapeIndex].RayTest(pose, origin, direction, maximumT, out t, out normal);
+        }
+
+        public override void RayTest<TRayHitHandler>(int shapeIndex, in RigidPose pose, ref RaySource rays, ref TRayHitHandler hitHandler)
+        {
+            shapes[shapeIndex].RayTest(pose, ref rays, ref hitHandler);
         }
     }
 
@@ -251,20 +301,36 @@ namespace BepuPhysics.Collidables
             Compound = true;
         }
 
+        protected override void Dispose(int index, BufferPool pool)
+        {
+            shapes[index].Dispose(pool);
+        }
+
+        protected override void RemoveAndDisposeChildren(int index, Shapes shapes, BufferPool pool)
+        {
+            ref var shape = ref this.shapes[index];
+            for (int i = 0; i < shape.ChildCount; ++i)
+            {
+                ref var child = ref shape.GetChild(i);
+                shapes.RecursivelyRemoveAndDispose(child.ShapeIndex, pool);
+            }
+        }
+
         public override void ComputeBounds(ref BoundingBoxBatcher batcher)
         {
             batcher.ExecuteCompoundBatch(this);
         }
 
-        public override void ComputeBounds(int shapeIndex, ref RigidPose pose, out Vector3 min, out Vector3 max)
+        public override void ComputeBounds(int shapeIndex, in RigidPose pose, out Vector3 min, out Vector3 max)
         {
             shapes[shapeIndex].ComputeBounds(pose.Orientation, shapeBatches, out min, out max);
             min += pose.Position;
             max += pose.Position;
         }
-        public override bool RayTest(int shapeIndex, in RigidPose pose, in Vector3 origin, in Vector3 direction, out float t, out Vector3 normal)
+
+        public override bool RayTest(int shapeIndex, in RigidPose pose, in Vector3 origin, in Vector3 direction, float maximumT, out float t, out Vector3 normal)
         {
-            return shapes[shapeIndex].RayTest(pose, origin, direction, shapeBatches, out t, out normal);
+            return shapes[shapeIndex].RayTest(pose, origin, direction, maximumT, shapeBatches, out t, out normal);
         }
 
         public override void RayTest<TRayHitHandler>(int shapeIndex, in RigidPose pose, ref RaySource rays, ref TRayHitHandler hitHandler)
@@ -272,6 +338,7 @@ namespace BepuPhysics.Collidables
             shapes[shapeIndex].RayTest(pose, shapeBatches, ref rays, ref hitHandler);
         }
     }
+
 
 
     public class Shapes
@@ -303,10 +370,10 @@ namespace BepuPhysics.Collidables
         /// <param name="shapeIndex">Index of the shape.</param>
         /// <param name="bounds">Bounding box of the specified shape with the specified pose.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void UpdateBounds(ref RigidPose pose, ref TypedIndex shapeIndex, out BoundingBox bounds)
+        public void UpdateBounds(in RigidPose pose, ref TypedIndex shapeIndex, out BoundingBox bounds)
         {
             //Note: the min and max here are in absolute coordinates, which means this is a spot that has to be updated in the event that positions use a higher precision representation.
-            batches[shapeIndex.Type].ComputeBounds(shapeIndex.Index, ref pose, out bounds.Min, out bounds.Max);
+            batches[shapeIndex.Type].ComputeBounds(shapeIndex.Index, pose, out bounds.Min, out bounds.Max);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -341,10 +408,36 @@ namespace BepuPhysics.Collidables
 
 
 
+        /// <summary>
+        /// Removes a shape and any existing children from the shapes collection and returns their resources to the given pool.
+        /// </summary>
+        /// <param name="shapeIndex">Index of the shape to remove.</param>
+        /// <param name="pool">Pool to return all shape resources to.</param>
+        public void RecursivelyRemoveAndDispose(TypedIndex shapeIndex, BufferPool pool)
+        {
+            Debug.Assert(RegisteredTypeSpan > shapeIndex.Type && batches[shapeIndex.Type] != null);
+            batches[shapeIndex.Type].RecursivelyRemoveAndDispose(shapeIndex.Index, this, pool);
+        }
+
+        /// <summary>
+        /// Removes a shape from the shapes collection and returns its resources to the given pool. Does not remove or dispose any children.
+        /// </summary>
+        /// <param name="shapeIndex">Index of the shape to remove.</param>
+        /// <param name="pool">Pool to return all shape resources to.</param>
+        public void RemoveAndDispose(TypedIndex shapeIndex, BufferPool pool)
+        {
+            Debug.Assert(RegisteredTypeSpan > shapeIndex.Type && batches[shapeIndex.Type] != null);
+            batches[shapeIndex.Type].RemoveAndDispose(shapeIndex.Index, pool);
+        }
+
+        /// <summary>
+        /// Removes a shape without removing its children or disposing any resources.
+        /// </summary>
+        /// <param name="shapeIndex">Index of the shape to remove.</param>
         public void Remove(TypedIndex shapeIndex)
         {
             Debug.Assert(RegisteredTypeSpan > shapeIndex.Type && batches[shapeIndex.Type] != null);
-            batches[shapeIndex.Type].RemoveAt(shapeIndex.Index);
+            batches[shapeIndex.Type].Remove(shapeIndex.Index);
         }
 
         /// <summary>

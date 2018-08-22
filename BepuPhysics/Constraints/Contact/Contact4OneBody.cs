@@ -164,31 +164,20 @@ namespace BepuPhysics.Constraints.Contact
         public void Prestep(Bodies bodies, ref Vector<int> bodyReferences, int count,
             float dt, float inverseDt, ref Contact4OneBodyPrestepData prestep, out Contact4OneBodyProjection projection)
         {
-            //Some speculative compression options not (yet) pursued:
-            //1) Store the surface basis in a compressed fashion. It could be stored within 32 bits by using standard compression schemes, but we lack the necessary
-            //instructions to properly SIMDify the decode operation (e.g. shift). Even with the potential savings of 3 floats (relative to uncompressed storage), it would be questionable.
-            //We could drop one of the four components of the quaternion and reconstruct it relatively easily- that would just require that the encoder ensures the W component is positive.
-            //It would require a square root, but it might still be a net win. On an IVB, sqrt has a 7 cycle throughput. 4 bytes saved * 4 lanes = 16 bytes, which takes 
-            //about 16 / 5.5GBps = 2.9ns, where 5.5 is roughly the per-core bandwidth on a 3770K. 7 cycles is only 2ns at 3.5ghz. 
-            //There are a couple of other instructions necessary to decode, but sqrt is by far the heaviest; it's likely a net win.
             //Be careful about the execution order here. It should be aligned with the prestep data layout to ensure prefetching works well.
-
             bodies.GatherInertia(ref bodyReferences, count, out projection.InertiaA);
-            Vector3Wide.Add(ref prestep.OffsetA0, ref prestep.OffsetA1, out var a01);
-            Vector3Wide.Add(ref prestep.OffsetA2, ref prestep.OffsetA3, out var a23);
-            Vector3Wide.Add(ref a01, ref a23, out var offsetToManifoldCenterA);
-            var scale = new Vector<float>(0.25f);
-            Vector3Wide.Scale(ref offsetToManifoldCenterA, ref scale, out offsetToManifoldCenterA);
-            projection.PremultipliedFrictionCoefficient = scale * prestep.FrictionCoefficient;
+            Contact4Functions.ComputeFrictionCenter(prestep.OffsetA0, prestep.OffsetA1, prestep.OffsetA2, prestep.OffsetA3, 
+                prestep.PenetrationDepth0, prestep.PenetrationDepth1, prestep.PenetrationDepth2, prestep.PenetrationDepth3, out var offsetToManifoldCenterA);
+            projection.PremultipliedFrictionCoefficient = 0.25f * prestep.FrictionCoefficient;
             projection.Normal = prestep.Normal;
             Helpers.BuildOrthnormalBasis(ref prestep.Normal, out var x, out var z);
             TangentFrictionOneBody.Prestep(ref x, ref z, ref offsetToManifoldCenterA, ref projection.InertiaA, out projection.Tangent);
             PenetrationLimit4OneBody.Prestep(ref projection.InertiaA, ref prestep.Normal, ref prestep, dt, inverseDt, out projection.Penetration);
             //Just assume the lever arms for B are the same. It's a good guess. (The only reason we computed the offset B is because we didn't want to go into world space.)
-            Vector3Wide.Distance(ref prestep.OffsetA0, ref offsetToManifoldCenterA, out projection.LeverArm0);
-            Vector3Wide.Distance(ref prestep.OffsetA1, ref offsetToManifoldCenterA, out projection.LeverArm1);
-            Vector3Wide.Distance(ref prestep.OffsetA2, ref offsetToManifoldCenterA, out projection.LeverArm2);
-            Vector3Wide.Distance(ref prestep.OffsetA3, ref offsetToManifoldCenterA, out projection.LeverArm3);
+            Vector3Wide.Distance(prestep.OffsetA0, offsetToManifoldCenterA, out projection.LeverArm0);
+            Vector3Wide.Distance(prestep.OffsetA1, offsetToManifoldCenterA, out projection.LeverArm1);
+            Vector3Wide.Distance(prestep.OffsetA2, offsetToManifoldCenterA, out projection.LeverArm2);
+            Vector3Wide.Distance(prestep.OffsetA3, offsetToManifoldCenterA, out projection.LeverArm3);
             TwistFrictionOneBody.Prestep(ref projection.InertiaA, ref prestep.Normal, out projection.Twist);
         }
 
