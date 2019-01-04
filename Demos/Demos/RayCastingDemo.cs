@@ -73,8 +73,7 @@ namespace Demos
             camera.Position = new Vector3(-20f, 13, -20f);
             camera.Yaw = MathHelper.Pi * 3f / 4;
             camera.Pitch = MathHelper.Pi * 0.1f;
-            Simulation = Simulation.Create(BufferPool, new NoCollisionCallbacks());
-            //Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            Simulation = Simulation.Create(BufferPool, new NoCollisionCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
             var box = new Box(0.5f, 1.5f, 1f);
             var capsule = new Capsule(0, 0.5f);
@@ -175,13 +174,13 @@ namespace Demos
                 new CollidableDescription(Simulation.Shapes.Add(planeMesh), 0.1f)));
 
             int raySourceCount = 3;
-            QuickList<QuickList<TestRay, Buffer<TestRay>>, Buffer<QuickList<TestRay, Buffer<TestRay>>>>.Create(BufferPool.SpecializeFor<QuickList<TestRay, Buffer<TestRay>>>(), raySourceCount, out raySources);
+            raySources = new QuickList<QuickList<TestRay>>(raySourceCount, BufferPool);
             raySources.Count = raySourceCount;
 
             //Spew rays all over the place, starting inside the shape cube.
             int randomRayCount = 1 << 14;
             ref var randomRays = ref raySources[0];
-            QuickList<TestRay, Buffer<TestRay>>.Create(BufferPool.SpecializeFor<TestRay>(), randomRayCount, out randomRays);
+            randomRays = new QuickList<TestRay>(randomRayCount, BufferPool);
             for (int i = 0; i < randomRayCount; ++i)
             {
                 var direction = GetDirection(random);
@@ -204,7 +203,7 @@ namespace Demos
             var unitZSpacing = new Vector2(unitZScreenWidth / frustumRayWidth, unitZScreenHeight / frustumRayHeight);
             var unitZBase = (unitZSpacing - new Vector2(unitZScreenWidth, unitZScreenHeight)) * 0.5f;
             ref var frustumRays = ref raySources[1];
-            QuickList<TestRay, Buffer<TestRay>>.Create(BufferPool.SpecializeFor<TestRay>(), frustumRayWidth * frustumRayHeight, out frustumRays);
+            frustumRays = new QuickList<TestRay>(frustumRayWidth * frustumRayHeight, BufferPool);
             var frustumOrigin = new Vector3(0, 0, -50);
             for (int i = 0; i < frustumRayWidth; ++i)
             {
@@ -224,7 +223,7 @@ namespace Demos
             var wallSpacing = new Vector2(0.1f);
             var wallBase = 0.5f * (wallSpacing - wallSpacing * new Vector2(wallWidth, wallHeight));
             ref var wallRays = ref raySources[2];
-            QuickList<TestRay, Buffer<TestRay>>.Create(BufferPool.SpecializeFor<TestRay>(), wallWidth * wallHeight, out wallRays);
+            wallRays = new QuickList<TestRay>(wallWidth * wallHeight, BufferPool);
             for (int i = 0; i < wallWidth; ++i)
             {
                 for (int j = 0; j < wallHeight; ++j)
@@ -238,11 +237,11 @@ namespace Demos
                 }
             }
             var maxRayCount = Math.Max(randomRays.Count, Math.Max(frustumRays.Count, wallRays.Count));
-            QuickList<TestRay, Buffer<TestRay>>.Create(BufferPool.SpecializeFor<TestRay>(), maxRayCount, out testRays);
+            testRays = new QuickList<TestRay>(maxRayCount, BufferPool);
             var timeSampleCount = 16;
-            QuickList<IntersectionAlgorithm, Array<IntersectionAlgorithm>>.Create(new PassthroughArrayPool<IntersectionAlgorithm>(), 2, out algorithms);
-            algorithms.Add(new IntersectionAlgorithm("Unbatched", UnbatchedWorker, BufferPool, maxRayCount, timeSampleCount), new PassthroughArrayPool<IntersectionAlgorithm>());
-            algorithms.Add(new IntersectionAlgorithm("Batched", BatchedWorker, BufferPool, maxRayCount, timeSampleCount), new PassthroughArrayPool<IntersectionAlgorithm>());
+            algorithms = new IntersectionAlgorithm[2];
+            algorithms[0] = new IntersectionAlgorithm("Unbatched", UnbatchedWorker, BufferPool, maxRayCount, timeSampleCount);
+            algorithms[1] = new IntersectionAlgorithm("Batched", BatchedWorker, BufferPool, maxRayCount, timeSampleCount);
 
             BufferPool.Take(Environment.ProcessorCount * 2, out jobs);
         }
@@ -267,8 +266,8 @@ namespace Demos
             public float MaximumT;
             public Vector3 Direction;
         }
-        QuickList<QuickList<TestRay, Buffer<TestRay>>, Buffer<QuickList<TestRay, Buffer<TestRay>>>> raySources;
-        QuickList<TestRay, Buffer<TestRay>> testRays;
+        QuickList<QuickList<TestRay>> raySources;
+        QuickList<TestRay> testRays;
 
 
         struct RayHit
@@ -293,7 +292,7 @@ namespace Demos
                 BufferPool pool, int largestRayCount, int timingSampleCount = 16)
             {
                 Name = name;
-                Timings = new TimingsRingBuffer(timingSampleCount);
+                Timings = new TimingsRingBuffer(timingSampleCount, pool);
                 this.worker = worker;
                 internalWorker = ExecuteWorker;
                 pool.Take(largestRayCount, out Results);
@@ -305,7 +304,7 @@ namespace Demos
                 Interlocked.Add(ref IntersectionCount, intersectionCount);
             }
 
-            public void Execute(ref QuickList<TestRay, Buffer<TestRay>> rays, SimpleThreadDispatcher dispatcher)
+            public void Execute(ref QuickList<TestRay> rays, SimpleThreadDispatcher dispatcher)
             {
                 CacheBlaster.Blast();
                 for (int i = 0; i < rays.Count; ++i)
@@ -368,7 +367,7 @@ namespace Demos
             return intersectionCount;
         }
 
-        QuickList<IntersectionAlgorithm, Array<IntersectionAlgorithm>> algorithms;
+        IntersectionAlgorithm[] algorithms;
 
         struct RayJob
         {
@@ -405,17 +404,13 @@ namespace Demos
             }
         }
 
-
-        const int sampleCount = 32;
-        TimingsRingBuffer batchedQueryTimes = new TimingsRingBuffer(sampleCount);
-        TimingsRingBuffer unbatchedQueryTimes = new TimingsRingBuffer(sampleCount);
         bool shouldCycle = true;
         bool shouldRotate = true;
         bool shouldUseMultithreading = true;
         int raySourceIndex;
         int frameCount;
         float rotation;
-        void CopyAndRotate(ref QuickList<TestRay, Buffer<TestRay>> source)
+        void CopyAndRotate(ref QuickList<TestRay> source)
         {
             testRays.Count = source.Count;
             var transform = Matrix3x3.CreateFromAxisAngle(new Vector3(0, 1, 0), rotation);
@@ -430,9 +425,9 @@ namespace Demos
             }
         }
 
-        public unsafe override void Update(Input input, float dt)
+        public unsafe override void Update(Window window, Camera camera, Input input, float dt)
         {
-            base.Update(input, dt);
+            base.Update(window, camera, input, dt);
 
             char one = '1';
             for (int i = 0; i < raySources.Count; ++i)
@@ -486,11 +481,11 @@ namespace Demos
             }
 
 
-            for (int i = 0; i < algorithms.Count; ++i)
+            for (int i = 0; i < algorithms.Length; ++i)
             {
                 algorithms[i].Execute(ref testRays, shouldUseMultithreading ? ThreadDispatcher : null);
             }
-            for (int i = 1; i < algorithms.Count; ++i)
+            for (int i = 1; i < algorithms.Length; ++i)
             {
                 Debug.Assert(algorithms[i].IntersectionCount == algorithms[0].IntersectionCount);
                 var current = algorithms[i];
@@ -558,7 +553,7 @@ namespace Demos
                 new Vector2(32, y), 16, new Vector3(1), font);
         }
 
-        public override void Render(Renderer renderer, TextBuilder text, Font font)
+        public override void Render(Renderer renderer, Camera camera, Input input, TextBuilder text, Font font)
         {
             var batchedPackedColor = Helpers.PackColor(new Vector3(0.75f, 0.75f, 0));
             var batchedPackedNormalColor = Helpers.PackColor(new Vector3(1f, 1f, 0));
@@ -588,13 +583,13 @@ namespace Demos
 
             var baseStats = algorithms[0].Timings.ComputeStats();
             var baseHeight = 48;
-            for (int i = 0; i < algorithms.Count; ++i)
+            for (int i = 0; i < algorithms.Length; ++i)
             {
                 var stats = algorithms[i].Timings.ComputeStats();
                 WriteResults(algorithms[i].Name, stats.Average, baseStats.Average, renderer.Surface.Resolution.Y - (baseHeight - 16 * i), renderer.TextBatcher, text, font);
             }
 
-            base.Render(renderer, text, font);
+            base.Render(renderer, camera, input, text, font);
         }
 
     }

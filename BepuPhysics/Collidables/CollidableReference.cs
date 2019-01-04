@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using BepuUtilities.Collections;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 namespace BepuPhysics.Collidables
@@ -24,7 +25,7 @@ namespace BepuPhysics.Collidables
         public uint Packed;
 
         /// <summary>
-        /// Gets or sets whether this reference points to a static collidable. If false, the reference points to a body.
+        /// Gets the mobility state of the owner of this collidable.
         /// </summary>
         public CollidableMobility Mobility
         {
@@ -33,7 +34,7 @@ namespace BepuPhysics.Collidables
         }
 
         /// <summary>
-        /// Gets or sets the handle of the collidable referred to by this instance.
+        /// Gets the handle of the owner of the collidable referred to by this instance.
         /// </summary>
         public int Handle
         {
@@ -42,12 +43,38 @@ namespace BepuPhysics.Collidables
         }
 
         
+        /// <summary>
+        /// Creates a collidable reference.
+        /// </summary>
+        /// <param name="mobility">Mobility type of the owner of the collidable.</param>
+        /// <param name="handle">Handle of the owner of the collidable.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public CollidableReference(CollidableMobility mobility, int collidableHandle)
+        public CollidableReference(CollidableMobility mobility, int handle)
         {
             Debug.Assert((int)mobility >= 0 && (int)mobility <= 2, "Hey you, that mobility type doesn't exist. Or we changed something and this needs to be updated.");
-            Debug.Assert(collidableHandle >= 0 && collidableHandle < 1 << 30, "Do you actually have more than 2^30 collidables? That seems unlikely.");
-            Packed = ((uint)mobility << 30) | (uint)collidableHandle;
+            Debug.Assert(handle >= 0 && handle < 1 << 30, "Do you actually have more than 2^30 collidables? That seems unlikely.");
+            Packed = ((uint)mobility << 30) | (uint)handle;
+        }
+
+        public override string ToString()
+        {
+            return $"{Mobility}: {Handle}";
         }
     }
+
+    public struct CollidableReferenceComparer : IEqualityComparerRef<CollidableReference>
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Equals(ref CollidableReference a, ref CollidableReference b)
+        {
+            return a.Packed == b.Packed;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int Hash(ref CollidableReference item)
+        {
+            return (int)item.Packed;
+        }
+    }
+
 }

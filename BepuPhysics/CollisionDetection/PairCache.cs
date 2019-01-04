@@ -15,7 +15,7 @@ using static BepuPhysics.CollisionDetection.WorkerPairCache;
 namespace BepuPhysics.CollisionDetection
 {
     //would you care for some generics
-    using OverlapMapping = QuickDictionary<CollidablePair, CollidablePairPointers, Buffer<CollidablePair>, Buffer<CollidablePairPointers>, Buffer<int>, CollidablePairComparer>;
+    using OverlapMapping = QuickDictionary<CollidablePair, CollidablePairPointers, CollidablePairComparer>;
 
     [StructLayout(LayoutKind.Explicit, Size = 8)]
     public struct CollidablePair
@@ -71,6 +71,25 @@ namespace BepuPhysics.CollisionDetection
         public PairCacheIndex CollisionDetectionCache;
     }
 
+    internal struct ArrayList<T>
+    {
+        public T[] Values;
+        public int Count;
+        public ref T this[int index] { get { return ref Values[index]; } }
+        public bool Allocated { get { return Values != null; } }
+        public ArrayList(int initialCapacity)
+        {
+            Values = new T[initialCapacity];
+            Count = 0;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal ref T AllocateUnsafely()
+        {
+            Debug.Assert(Count < Values.Length);
+            return ref Values[Count++];
+        }
+    }
 
     public partial class PairCache
     {
@@ -90,12 +109,13 @@ namespace BepuPhysics.CollisionDetection
         int minimumPerTypeCapacity;
         int previousPendingSize;
 
+
         //While the current worker caches are read from, the next caches are written to.
         //The worker pair caches contain a reference to a buffer pool, which is a reference type. That makes WorkerPairCache non-blittable, so in the interest of not being
         //super duper gross, we don't use the untyped buffer pools to store it. 
         //Given that the size of the arrays here will be small and almost never change, this isn't a significant issue.
-        QuickList<WorkerPairCache, Array<WorkerPairCache>> workerCaches;
-        internal QuickList<WorkerPairCache, Array<WorkerPairCache>> NextWorkerCaches;
+        ArrayList<WorkerPairCache> workerCaches;
+        internal ArrayList<WorkerPairCache> NextWorkerCaches;
 
 
         public PairCache(BufferPool pool, int initialSetCapacity, int minimumMappingSize, int minimumPendingSize, int minimumPerTypeCapacity)
@@ -103,9 +123,7 @@ namespace BepuPhysics.CollisionDetection
             this.minimumPendingSize = minimumPendingSize;
             this.minimumPerTypeCapacity = minimumPerTypeCapacity;
             this.pool = pool;
-            OverlapMapping.Create(
-                pool.SpecializeFor<CollidablePair>(), pool.SpecializeFor<CollidablePairPointers>(), pool.SpecializeFor<int>(),
-                SpanHelper.GetContainingPowerOf2(minimumMappingSize), 3, out Mapping);
+            Mapping = new OverlapMapping(minimumMappingSize, pool);
             ResizeSetsCapacity(initialSetCapacity, 0);
         }
 
@@ -120,8 +138,8 @@ namespace BepuPhysics.CollisionDetection
                 if (constraint > maximumConstraintTypeCount)
                     maximumConstraintTypeCount = constraint;
             }
-            QuickList<PreallocationSizes, Buffer<PreallocationSizes>>.Create(pool.SpecializeFor<PreallocationSizes>(), maximumConstraintTypeCount, out var minimumSizesPerConstraintType);
-            QuickList<PreallocationSizes, Buffer<PreallocationSizes>>.Create(pool.SpecializeFor<PreallocationSizes>(), maximumCollisionTypeCount, out var minimumSizesPerCollisionType);
+            var minimumSizesPerConstraintType = new QuickList<PreallocationSizes>(maximumConstraintTypeCount, pool);
+            var minimumSizesPerCollisionType = new QuickList<PreallocationSizes>(maximumCollisionTypeCount, pool);
             //Since the minimum size accumulation builds the minimum size incrementally, bad data within the array can corrupt the result- we must clear it.
             minimumSizesPerConstraintType.Span.Clear(0, minimumSizesPerConstraintType.Span.Length);
             minimumSizesPerCollisionType.Span.Clear(0, minimumSizesPerCollisionType.Span.Length);
@@ -132,14 +150,15 @@ namespace BepuPhysics.CollisionDetection
 
             var threadCount = threadDispatcher != null ? threadDispatcher.ThreadCount : 1;
             //Ensure that the new worker pair caches can hold all workers.
-            if (!NextWorkerCaches.Span.Allocated || NextWorkerCaches.Span.Length < threadCount)
+            if (!NextWorkerCaches.Allocated || NextWorkerCaches.Values.Length < threadCount)
             {
                 //The next worker caches should never need to be disposed here. The flush should have taken care of it.
 #if DEBUG
                 for (int i = 0; i < NextWorkerCaches.Count; ++i)
                     Debug.Assert(NextWorkerCaches[i].Equals(default(WorkerPairCache)));
 #endif
-                QuickList<WorkerPairCache, Array<WorkerPairCache>>.Create(new PassthroughArrayPool<WorkerPairCache>(), threadCount, out NextWorkerCaches);
+                Array.Resize(ref NextWorkerCaches.Values, threadCount);
+                NextWorkerCaches.Count = threadCount;
             }
             //Note that we have not initialized the workerCaches from the previous frame. In the event that this is the first frame and there are no previous worker caches,
             //there will be no pointers into the caches, and removal analysis loops over the count which defaults to zero- so it's safe.
@@ -158,8 +177,8 @@ namespace BepuPhysics.CollisionDetection
             {
                 NextWorkerCaches[0] = new WorkerPairCache(0, pool, ref minimumSizesPerConstraintType, ref minimumSizesPerCollisionType, pendingSize, minimumPerTypeCapacity);
             }
-            minimumSizesPerConstraintType.Dispose(pool.SpecializeFor<PreallocationSizes>());
-            minimumSizesPerCollisionType.Dispose(pool.SpecializeFor<PreallocationSizes>());
+            minimumSizesPerConstraintType.Dispose(pool);
+            minimumSizesPerCollisionType.Dispose(pool);
 
             //Create the pair freshness array for the existing overlaps.
             pool.Take(Mapping.Count, out PairFreshness);
@@ -181,7 +200,7 @@ namespace BepuPhysics.CollisionDetection
 
         internal void ResizeConstraintToPairMappingCapacity(Solver solver, int targetCapacity)
         {
-            targetCapacity = BufferPool<CollisionPairLocation>.GetLowestContainingElementCount(Math.Max(solver.HandlePool.HighestPossiblyClaimedId + 1, targetCapacity));
+            targetCapacity = BufferPool.GetCapacityForCount<CollisionPairLocation>(Math.Max(solver.HandlePool.HighestPossiblyClaimedId + 1, targetCapacity));
             if (ConstraintHandleToPair.Length != targetCapacity)
             {
                 pool.SpecializeFor<CollisionPairLocation>().Resize(ref ConstraintHandleToPair, targetCapacity, Math.Min(targetCapacity, ConstraintHandleToPair.Length));
@@ -193,7 +212,7 @@ namespace BepuPhysics.CollisionDetection
         /// <summary>
         /// Flush all deferred changes from the last narrow phase execution.
         /// </summary>
-        public void PrepareFlushJobs(ref QuickList<NarrowPhaseFlushJob, Buffer<NarrowPhaseFlushJob>> jobs)
+        public void PrepareFlushJobs(ref QuickList<NarrowPhaseFlushJob> jobs)
         {
             //Get rid of the now-unused worker caches.
             for (int i = 0; i < workerCaches.Count; ++i)
@@ -215,10 +234,11 @@ namespace BepuPhysics.CollisionDetection
                 if (newMappingSize > largestIntermediateSize)
                     largestIntermediateSize = newMappingSize;
             }
-            Mapping.EnsureCapacity(largestIntermediateSize, pool.SpecializeFor<CollidablePair>(), pool.SpecializeFor<CollidablePairPointers>(), pool.SpecializeFor<int>());
+            Mapping.EnsureCapacity(largestIntermediateSize, pool);
 
-            jobs.Add(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.FlushPairCacheChanges }, pool.SpecializeFor<NarrowPhaseFlushJob>());
+            jobs.Add(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.FlushPairCacheChanges }, pool);
         }
+
         public unsafe void FlushMappingChanges()
         {
             //Flush all pending adds from the new set.
@@ -238,7 +258,7 @@ namespace BepuPhysics.CollisionDetection
                 for (int j = 0; j < cache.PendingAdds.Count; ++j)
                 {
                     ref var pending = ref cache.PendingAdds[j];
-                    var added = Mapping.AddUnsafely(ref pending.Pair, ref pending.Pointers);
+                    var added = Mapping.AddUnsafely(ref pending.Pair, pending.Pointers);
                     Debug.Assert(added);
                 }
             }
@@ -259,8 +279,8 @@ namespace BepuPhysics.CollisionDetection
                 {
                     largestPendingSize = cache.PendingRemoves.Count;
                 }
-                cache.PendingAdds.Dispose(cache.pool.SpecializeFor<PendingAdd>());
-                cache.PendingRemoves.Dispose(cache.pool.SpecializeFor<CollidablePair>());
+                cache.PendingAdds.Dispose(cache.pool);
+                cache.PendingRemoves.Dispose(cache.pool);
             }
             previousPendingSize = largestPendingSize;
 
@@ -287,7 +307,7 @@ namespace BepuPhysics.CollisionDetection
                 }
             }
 #if DEBUG
-            if (NextWorkerCaches.Span.Allocated)
+            if (NextWorkerCaches.Allocated)
             {
                 for (int i = 0; i < NextWorkerCaches.Count; ++i)
                 {
@@ -305,7 +325,7 @@ namespace BepuPhysics.CollisionDetection
             }
             //Note that we do not need to dispose the worker cache arrays themselves- they were just arrays pulled out of a passthrough pool.
 #if DEBUG
-            if (NextWorkerCaches.Span.Allocated)
+            if (NextWorkerCaches.Allocated)
             {
                 for (int i = 0; i < NextWorkerCaches.Count; ++i)
                 {
@@ -313,7 +333,7 @@ namespace BepuPhysics.CollisionDetection
                 }
             }
 #endif
-            Mapping.Dispose(pool.SpecializeFor<CollidablePair>(), pool.SpecializeFor<CollidablePairPointers>(), pool.SpecializeFor<int>());
+            Mapping.Dispose(pool);
             for (int i = 1; i < SleepingSets.Length; ++i)
             {
                 ref var set = ref SleepingSets[i];
@@ -360,18 +380,7 @@ namespace BepuPhysics.CollisionDetection
             PairFreshness[pairIndex] = 0xFF;
             NextWorkerCaches[workerIndex].Update(ref pointers, ref collisionCache, ref constraintCache);
         }
-
-        /// <summary>
-        /// Gets whether a constraint type id maps to a contact constraint.
-        /// </summary>
-        /// <param name="constraintTypeId">Id of the constraint to check.</param>
-        /// <returns>True if the type id refers to a contact constraint. False otherwise.</returns>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool IsContactBatch(int constraintTypeId)
-        {
-            return constraintTypeId < CollisionConstraintTypeCount;
-        }
-
+        
         //4 convex one body, 4 convex two body, 7 nonconvex one body, 7 convex two body.
         public const int CollisionConstraintTypeCount = 22;
         public const int CollisionTypeCount = 16;

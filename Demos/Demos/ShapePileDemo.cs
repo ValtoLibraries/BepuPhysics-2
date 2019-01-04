@@ -20,7 +20,7 @@ namespace Demos.Demos
             //camera.Yaw = MathHelper.Pi ; 
             camera.Yaw = MathHelper.Pi * 3f / 4;
             //camera.Pitch = MathHelper.PiOver2 * 0.999f;
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks());
+            Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
             var box = new Box(1f, 3f, 2f);
             var capsule = new Capsule(1f, 1f);
@@ -40,10 +40,10 @@ namespace Demos.Demos
                 {
                     for (int k = 0; k < length; ++k)
                     {
-                        var location = new Vector3(3, 3, 3) * new Vector3(i, j, k) + new Vector3(-width * 1.5f, 1.5f, -length * 1.5f);
+                        var location = new Vector3(3, 3, 3) * new Vector3(i, j, k) + new Vector3(-width * 1.5f, 2.5f, -length * 1.5f);
                         var bodyDescription = new BodyDescription
                         {
-                            Activity = new BodyActivityDescription { MinimumTimestepCountUnderThreshold = 32, SleepThreshold = 0.01f },
+                            Activity = new BodyActivityDescription(0.01f),
                             Pose = new RigidPose
                             {
                                 Orientation = BepuUtilities.Quaternion.Identity,
@@ -76,9 +76,7 @@ namespace Demos.Demos
                 }
             }
             
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
-            Simulation.Deterministic = false;
-            
+
             var staticShape = new Box(1, 1, 1);
             var staticShapeIndex = Simulation.Shapes.Add(staticShape);
             const int staticGridWidth = 100;

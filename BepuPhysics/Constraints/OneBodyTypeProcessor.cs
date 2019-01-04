@@ -16,15 +16,26 @@ namespace BepuPhysics.Constraints
     /// <typeparam name="TProjection">Type of the projection to input.</typeparam>
     public interface IOneBodyConstraintFunctions<TPrestepData, TProjection, TAccumulatedImpulse>
     {
-        void Prestep(Bodies bodies, ref Vector<int> bodyReferences, int count, float dt, float inverseDt, ref TPrestepData prestepData, out TProjection projection);
+        void Prestep(Bodies bodies, ref Vector<int> bodyReferences, int count, float dt, float inverseDt, ref BodyInertias inertia, ref TPrestepData prestepData, out TProjection projection);
         void WarmStart(ref BodyVelocities velocity, ref TProjection projection, ref TAccumulatedImpulse accumulatedImpulse);
         void Solve(ref BodyVelocities velocity, ref TProjection projection, ref TAccumulatedImpulse accumulatedImpulse);
+    }
+
+    /// <summary>
+    /// Prestep, warm start, solve iteration, and incremental contact update functions for a one body contact constraint type.
+    /// </summary>
+    /// <typeparam name="TPrestepData">Type of the prestep data used by the constraint.</typeparam>
+    /// <typeparam name="TAccumulatedImpulse">Type of the accumulated impulses used by the constraint.</typeparam>
+    /// <typeparam name="TProjection">Type of the projection to input.</typeparam>
+    public interface IOneBodyContactConstraintFunctions<TPrestepData, TProjection, TAccumulatedImpulse> : IOneBodyConstraintFunctions<TPrestepData, TProjection, TAccumulatedImpulse>
+    {
+        void IncrementallyUpdateContactData(in Vector<float> dt, in BodyVelocities velocity, ref TPrestepData prestepData);
     }
 
     //Not a big fan of complex generic-filled inheritance hierarchies, but this is the shortest evolutionary step to removing duplicates.
     //There are some other options if this inheritance hierarchy gets out of control.
     /// <summary>
-    /// Shared implementation across all two body constraints.
+    /// Shared implementation across all one body constraints.
     /// </summary>
     public abstract class OneBodyTypeProcessor<TPrestepData, TProjection, TAccumulatedImpulse, TConstraintFunctions>
         : TypeProcessor<Vector<int>, TPrestepData, TProjection, TAccumulatedImpulse>
@@ -87,7 +98,10 @@ namespace BepuPhysics.Constraints
             {
                 ref var prestep = ref Unsafe.Add(ref prestepBase, i);
                 ref var projection = ref Unsafe.Add(ref projectionBase, i);
-                function.Prestep(bodies, ref Unsafe.Add(ref bodyReferencesBase, i), GetCountInBundle(ref typeBatch, i), dt, inverseDt, ref prestep, out projection);
+                ref var references = ref Unsafe.Add(ref bodyReferencesBase, i);
+                var count = GetCountInBundle(ref typeBatch, i);
+                bodies.GatherInertia(ref references, count, out var inertiaA);
+                function.Prestep(bodies, ref references, count, dt, inverseDt, ref inertiaA, ref prestep, out projection);
             }
         }
 
@@ -127,5 +141,85 @@ namespace BepuPhysics.Constraints
             }
         }
 
+        public unsafe override void JacobiPrestep(ref TypeBatch typeBatch, Bodies bodies, ref FallbackBatch jacobiBatch, float dt, float inverseDt, int startBundle, int exclusiveEndBundle)
+        {
+            ref var prestepBase = ref Unsafe.AsRef<TPrestepData>(typeBatch.PrestepData.Memory);
+            ref var bodyReferencesBase = ref Unsafe.AsRef<Vector<int>>(typeBatch.BodyReferences.Memory);
+            ref var projectionBase = ref Unsafe.AsRef<TProjection>(typeBatch.Projection.Memory);
+            var function = default(TConstraintFunctions);
+            for (int i = startBundle; i < exclusiveEndBundle; ++i)
+            {
+                ref var prestep = ref Unsafe.Add(ref prestepBase, i);
+                ref var projection = ref Unsafe.Add(ref projectionBase, i);
+                ref var references = ref Unsafe.Add(ref bodyReferencesBase, i);
+                var count = GetCountInBundle(ref typeBatch, i);
+                bodies.GatherInertia(ref references, count, out var inertia);
+                //Jacobi batches split affected bodies into multiple pieces to guarantee convergence.
+                jacobiBatch.GetJacobiScaleForBodies(ref references, count, out var jacobiScale);
+                Symmetric3x3Wide.Scale(inertia.InverseInertiaTensor, jacobiScale, out inertia.InverseInertiaTensor);
+                inertia.InverseMass *= jacobiScale;
+                function.Prestep(bodies, ref references, count, dt, inverseDt, ref inertia, ref prestep, out projection);
+            }
+        }
+        public unsafe override void JacobiWarmStart(ref TypeBatch typeBatch, ref Buffer<BodyVelocity> bodyVelocities, ref FallbackTypeBatchResults jacobiResults, int startBundle, int exclusiveEndBundle)
+        {
+            ref var bodyReferencesBase = ref Unsafe.AsRef<Vector<int>>(typeBatch.BodyReferences.Memory);
+            ref var accumulatedImpulsesBase = ref Unsafe.AsRef<TAccumulatedImpulse>(typeBatch.AccumulatedImpulses.Memory);
+            ref var projectionBase = ref Unsafe.AsRef<TProjection>(typeBatch.Projection.Memory);
+            var function = default(TConstraintFunctions);
+            ref var jacobiResultsBundlesA = ref jacobiResults.GetVelocitiesForBody(0);
+            for (int i = startBundle; i < exclusiveEndBundle; ++i)
+            {
+                ref var projection = ref Unsafe.Add(ref projectionBase, i);
+                ref var accumulatedImpulses = ref Unsafe.Add(ref accumulatedImpulsesBase, i);
+                ref var bodyReferences = ref Unsafe.Add(ref bodyReferencesBase, i);
+                int count = GetCountInBundle(ref typeBatch, i);
+                ref var wsvA = ref jacobiResultsBundlesA[i];
+                Bodies.GatherVelocities(ref bodyVelocities, ref bodyReferences, count, out wsvA);
+                function.WarmStart(ref wsvA, ref projection, ref accumulatedImpulses);
+            }
+        }
+        public unsafe override void JacobiSolveIteration(ref TypeBatch typeBatch, ref Buffer<BodyVelocity> bodyVelocities, ref FallbackTypeBatchResults jacobiResults, int startBundle, int exclusiveEndBundle)
+        {
+            ref var bodyReferencesBase = ref Unsafe.AsRef<Vector<int>>(typeBatch.BodyReferences.Memory);
+            ref var accumulatedImpulsesBase = ref Unsafe.AsRef<TAccumulatedImpulse>(typeBatch.AccumulatedImpulses.Memory);
+            ref var projectionBase = ref Unsafe.AsRef<TProjection>(typeBatch.Projection.Memory);
+            var function = default(TConstraintFunctions);
+            ref var jacobiResultsBundlesA = ref jacobiResults.GetVelocitiesForBody(0);
+            for (int i = startBundle; i < exclusiveEndBundle; ++i)
+            {
+                ref var projection = ref Unsafe.Add(ref projectionBase, i);
+                ref var accumulatedImpulses = ref Unsafe.Add(ref accumulatedImpulsesBase, i);
+                ref var bodyReferences = ref Unsafe.Add(ref bodyReferencesBase, i);
+                int count = GetCountInBundle(ref typeBatch, i);
+                ref var wsvA = ref jacobiResultsBundlesA[i];
+                Bodies.GatherVelocities(ref bodyVelocities, ref bodyReferences, count, out wsvA);
+                function.Solve(ref wsvA, ref projection, ref accumulatedImpulses);
+            }
+        }
+
     }
+
+    public abstract class OneBodyContactTypeProcessor<TPrestepData, TProjection, TAccumulatedImpulse, TConstraintFunctions>
+        : OneBodyTypeProcessor<TPrestepData, TProjection, TAccumulatedImpulse, TConstraintFunctions>
+        where TConstraintFunctions : struct, IOneBodyContactConstraintFunctions<TPrestepData, TProjection, TAccumulatedImpulse>
+    {
+        public unsafe override void IncrementallyUpdateContactData(ref TypeBatch typeBatch, Bodies bodies, float dt, float inverseDt, int startBundle, int exclusiveEndBundle)
+        {
+            ref var prestepBase = ref Unsafe.AsRef<TPrestepData>(typeBatch.PrestepData.Memory);
+            ref var bodyReferencesBase = ref Unsafe.AsRef<Vector<int>>(typeBatch.BodyReferences.Memory);
+            ref var bodyVelocities = ref bodies.ActiveSet.Velocities;
+            var function = default(TConstraintFunctions);
+            var dtWide = new Vector<float>(dt);
+            for (int i = startBundle; i < exclusiveEndBundle; ++i)
+            {
+                ref var prestep = ref Unsafe.Add(ref prestepBase, i);
+                ref var references = ref Unsafe.Add(ref bodyReferencesBase, i);
+                var count = GetCountInBundle(ref typeBatch, i);
+                Bodies.GatherVelocities(ref bodyVelocities, ref references, count, out var velocityA);
+                function.IncrementallyUpdateContactData(dtWide, velocityA, ref prestep);
+            }
+        }
+    }
+
 }

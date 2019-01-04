@@ -73,10 +73,12 @@ namespace BepuPhysics.Constraints
     public struct AngularServoFunctions : IConstraintFunctions<AngularServoPrestepData, AngularServoProjection, Vector3Wide>
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Prestep(Bodies bodies, ref TwoBodyReferences bodyReferences, int count, float dt, float inverseDt, ref AngularServoPrestepData prestep,
-            out AngularServoProjection projection)
+        public void Prestep(Bodies bodies, ref TwoBodyReferences bodyReferences, int count, float dt, float inverseDt, ref BodyInertias inertiaA, ref BodyInertias inertiaB,
+            ref AngularServoPrestepData prestep, out AngularServoProjection projection)
         {
-            bodies.GatherInertiaAndPose(ref bodyReferences, count, out var orientationA, out var orientationB, out projection.ImpulseToVelocityA, out projection.NegatedImpulseToVelocityB);
+            bodies.GatherOrientation(ref bodyReferences, count, out var orientationA, out var orientationB);
+            projection.ImpulseToVelocityA = inertiaA.InverseInertiaTensor;
+            projection.NegatedImpulseToVelocityB = inertiaB.InverseInertiaTensor;
 
             //Jacobians are just the identity matrix.
 
@@ -91,9 +93,8 @@ namespace BepuPhysics.Constraints
             Symmetric3x3Wide.Invert(unsoftenedInverseEffectiveMass, out var unsoftenedEffectiveMass);
             Symmetric3x3Wide.Scale(unsoftenedEffectiveMass, effectiveMassCFMScale, out projection.EffectiveMass);
 
-            ServoSettingsWide.ComputeClampedBiasVelocity(errorAxis, errorLength, positionErrorToVelocity, prestep.ServoSettings, inverseDt, out var clampedBiasVelocity);
+            ServoSettingsWide.ComputeClampedBiasVelocity(errorAxis, errorLength, positionErrorToVelocity, prestep.ServoSettings, dt, inverseDt, out var clampedBiasVelocity, out projection.MaximumImpulse);
             Symmetric3x3Wide.TransformWithoutOverlap(clampedBiasVelocity, projection.EffectiveMass, out projection.BiasImpulse);
-            projection.MaximumImpulse = prestep.ServoSettings.MaximumForce * dt;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -112,8 +113,8 @@ namespace BepuPhysics.Constraints
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void Solve(ref BodyVelocities velocityA, ref BodyVelocities velocityB, 
-            in Symmetric3x3Wide effectiveMass, in Vector<float> softnessImpulseScale, in Vector3Wide biasImpulse, in Vector<float> maximumImpulse, 
+        public static void Solve(ref BodyVelocities velocityA, ref BodyVelocities velocityB,
+            in Symmetric3x3Wide effectiveMass, in Vector<float> softnessImpulseScale, in Vector3Wide biasImpulse, in Vector<float> maximumImpulse,
             in Symmetric3x3Wide impulseToVelocityA, in Symmetric3x3Wide negatedImpulseToVelocityB, ref Vector3Wide accumulatedImpulse)
         {
             //Jacobians are just I and -I.
@@ -124,12 +125,7 @@ namespace BepuPhysics.Constraints
             Vector3Wide.Subtract(biasImpulse, softnessComponent, out var csi);
             Vector3Wide.Subtract(csi, csiVelocityComponent, out csi);
 
-            var previousAccumulatedImpulse = accumulatedImpulse;
-            Vector3Wide.Add(accumulatedImpulse, csi, out accumulatedImpulse);
-            Vector3Wide.Length(accumulatedImpulse, out var newMagnitude);
-            var impulseScale = Vector.Min(maximumImpulse / newMagnitude, Vector<float>.One);
-            Vector3Wide.Scale(accumulatedImpulse, impulseScale, out accumulatedImpulse);
-            Vector3Wide.Subtract(accumulatedImpulse, previousAccumulatedImpulse, out csi);
+            ServoSettingsWide.ClampImpulse(maximumImpulse, ref accumulatedImpulse, ref csi);
 
             ApplyImpulse(ref velocityA.Angular, ref velocityB.Angular, impulseToVelocityA, negatedImpulseToVelocityB, csi);
         }
@@ -137,7 +133,7 @@ namespace BepuPhysics.Constraints
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Solve(ref BodyVelocities velocityA, ref BodyVelocities velocityB, ref AngularServoProjection projection, ref Vector3Wide accumulatedImpulse)
         {
-            Solve(ref velocityA, ref velocityB, projection.EffectiveMass, projection.SoftnessImpulseScale, projection.BiasImpulse, 
+            Solve(ref velocityA, ref velocityB, projection.EffectiveMass, projection.SoftnessImpulseScale, projection.BiasImpulse,
                 projection.MaximumImpulse, projection.ImpulseToVelocityA, projection.NegatedImpulseToVelocityB, ref accumulatedImpulse);
         }
 

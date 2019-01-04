@@ -92,7 +92,7 @@ namespace BepuPhysics
         internal float dt;
 
         int minimumBatchIndex, maximumBatchIndex;
-        Buffer<QuickList<BoundingBoxInstance, Buffer<BoundingBoxInstance>>> batches;
+        Buffer<QuickList<BoundingBoxInstance>> batches;
 
         /// <summary>
         /// The number of bodies to accumulate per type before executing an AABB update. The more bodies per batch, the less virtual overhead and execution divergence.
@@ -107,7 +107,7 @@ namespace BepuPhysics
             this.broadPhase = broadPhase;
             this.pool = pool;
             this.dt = dt;
-            pool.SpecializeFor<QuickList<BoundingBoxInstance, Buffer<BoundingBoxInstance>>>().Take(shapes.RegisteredTypeSpan, out batches);
+            pool.SpecializeFor<QuickList<BoundingBoxInstance>>().Take(shapes.RegisteredTypeSpan, out batches);
             //Clearing is required ensure that we know when a batch needs to be created and when a batch needs to be disposed.
             batches.Clear(0, shapes.RegisteredTypeSpan);
             minimumBatchIndex = shapes.RegisteredTypeSpan;
@@ -163,7 +163,7 @@ namespace BepuPhysics
                     {
                         var min = new Vector3(sourceBundleMin.X[0], sourceBundleMin.Y[0], sourceBundleMin.Z[0]);
                         var max = new Vector3(sourceBundleMax.X[0], sourceBundleMax.Y[0], sourceBundleMax.Z[0]);
-                        BoundingBox.CreateMerged(ref *minPointer, ref *maxPointer, ref min, ref max, out *minPointer, out *maxPointer);
+                        BoundingBox.CreateMerged(*minPointer, *maxPointer,  min, max, out *minPointer, out *maxPointer);
                     }
                     else
                     {
@@ -197,6 +197,8 @@ namespace BepuPhysics
                 var minimumComponents = Vector3.Min(absMin, absMax);
                 var minimumRadius = MathHelper.Min(minimumComponents.X, MathHelper.Min(minimumComponents.Y, minimumComponents.Z));
                 BoundingBoxHelpers.ExpandBoundingBox(ref *min, ref *max, instance.Velocities.Linear, instance.Velocities.Angular, dt, maximumRadius, maximumRadius - minimumRadius, maximumAllowedExpansion);
+                *min += instance.Pose.Position;
+                *max += instance.Pose.Position;
             }
         }
 
@@ -214,13 +216,13 @@ namespace BepuPhysics
                 broadPhase.GetActiveBoundsPointers(activeSet.Collidables[bodyIndex].BroadPhaseIndex, out var min, out var max);
                 *min = minValue;
                 *max = maxValue;
-                shapeBatch.shapes[instance.ShapeIndex].AddChildBoundsToBatcher(ref this, ref instance.Pose, ref instance.Velocities, bodyIndex);
+                shapeBatch.shapes[instance.ShapeIndex].AddChildBoundsToBatcher(ref this, instance.Pose, instance.Velocities, bodyIndex);
             }
         }
 
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        void Add(TypedIndex shapeIndex, ref RigidPose pose, ref BodyVelocity velocity, BoundsContinuation continuation)
+        void Add(TypedIndex shapeIndex, in RigidPose pose, in BodyVelocity velocity, BoundsContinuation continuation)
         {
             var typeIndex = shapeIndex.Type;
             Debug.Assert(typeIndex >= 0 && typeIndex < batches.Length, "The preallocated type batch array should be able to hold every type index. Is the type index broken?");
@@ -228,7 +230,7 @@ namespace BepuPhysics
             if (!batchSlot.Span.Allocated)
             {
                 //No list exists for this type yet.
-                QuickList<BoundingBoxInstance, Buffer<BoundingBoxInstance>>.Create(pool.SpecializeFor<BoundingBoxInstance>(), CollidablesPerFlush, out batchSlot);
+                batchSlot = new QuickList<BoundingBoxInstance>(CollidablesPerFlush, pool);
                 if (typeIndex < minimumBatchIndex)
                     minimumBatchIndex = typeIndex;
                 if (typeIndex > maximumBatchIndex)
@@ -252,23 +254,22 @@ namespace BepuPhysics
             }
         }
 
-        public void Add(int bodyIndex)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Add(int bodyIndex, in RigidPose pose, in BodyVelocity velocity, in Collidable collidable)
         {
             //For convenience, this function handles the case where the collidable reference points to nothing.
             //Note that this touches the memory associated with the full collidable. That's okay- we'll be reading the rest of it shortly if it has a collidable.
-            ref var activeSet = ref bodies.ActiveSet;
-            ref var collidable = ref activeSet.Collidables[bodyIndex];
             //Technically, you could make a second pass that only processes collidables, rather than iterating over all bodies and doing last second branches.
             //But then you'd be evicting everything from cache L1/L2. And, 99.99% of the time, bodies are going to have shapes, so this isn't going to be a difficult branch to predict.
             //Even if it was 50%, the cache benefit of executing alongside the just-touched data source would outweigh the misprediction.
             if (collidable.Shape.Exists)
             {
-                Add(collidable.Shape, ref activeSet.Poses[bodyIndex], ref activeSet.Velocities[bodyIndex], BoundsContinuation.CreateContinuation(bodyIndex));
+                Add(collidable.Shape, pose, velocity, BoundsContinuation.CreateContinuation(bodyIndex));
             }
         }
-        public void AddCompoundChild(int bodyIndex, TypedIndex shapeIndex, ref RigidPose pose, ref BodyVelocity velocity)
+        public void AddCompoundChild(int bodyIndex, TypedIndex shapeIndex, in RigidPose pose, in BodyVelocity velocity)
         {
-            Add(shapeIndex, ref pose, ref velocity, BoundsContinuation.CreateCompoundChildContinuation(bodyIndex));
+            Add(shapeIndex, pose, velocity, BoundsContinuation.CreateCompoundChildContinuation(bodyIndex));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -294,7 +295,6 @@ namespace BepuPhysics
                 }
             }
 #endif
-            var instancePool = pool.SpecializeFor<BoundingBoxInstance>();
             //Note reverse iteration. Execute all compound batches first.
             for (int i = maximumBatchIndex; i >= minimumBatchIndex; --i)
             {
@@ -306,11 +306,10 @@ namespace BepuPhysics
                 //Dispose of the batch and any associated buffers; since the flush is one pass, we won't be needing this again.
                 if (batch.Span.Allocated)
                 {
-                    batch.Dispose(instancePool);
+                    batch.Dispose(pool);
                 }
             }
-            var listPool = pool.SpecializeFor<QuickList<BoundingBoxInstance, Buffer<BoundingBoxInstance>>>();
-            listPool.Return(ref batches);
+            pool.Return(ref batches);
         }
     }
 }

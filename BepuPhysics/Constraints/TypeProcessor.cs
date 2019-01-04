@@ -28,13 +28,22 @@ namespace BepuPhysics.Constraints
         protected int typeId;
         protected int bodiesPerConstraint;
         public int TypeId { get { return typeId; } }
+        /// <summary>
+        /// Gets the number of bodies associated with each constraint in this type processor.
+        /// </summary>
         public int BodiesPerConstraint { get { return bodiesPerConstraint; } }
+        /// <summary>
+        /// Gets the number of degrees of freedom that each constraint in this type processor constrains. Equal to the number of entries in the accumulated impulses.
+        /// </summary>
+        public int ConstrainedDegreesOfFreedom { get; private set; }
         protected abstract int InternalBodiesPerConstraint { get; }
+        protected abstract int InternalConstrainedDegreesOfFreedom { get; }
 
         public void Initialize(int typeId)
         {
             this.typeId = typeId;
             this.bodiesPerConstraint = InternalBodiesPerConstraint;
+            this.ConstrainedDegreesOfFreedom = InternalConstrainedDegreesOfFreedom;
         }
 
         /// <summary>
@@ -59,6 +68,22 @@ namespace BepuPhysics.Constraints
         public unsafe abstract void TransferConstraint(ref TypeBatch typeBatch, int sourceBatchIndex, int indexInTypeBatch, Solver solver, Bodies bodies, int targetBatchIndex);
 
         public abstract void EnumerateConnectedBodyIndices<TEnumerator>(ref TypeBatch typeBatch, int indexInTypeBatch, ref TEnumerator enumerator) where TEnumerator : IForEach<int>;
+        [Conditional("DEBUG")]
+        protected abstract void ValidateAccumulatedImpulsesSizeInBytes(int sizeInBytes);
+        public unsafe void EnumerateAccumulatedImpulses<TEnumerator>(ref TypeBatch typeBatch, int indexInTypeBatch, ref TEnumerator enumerator) where TEnumerator : IForEach<float>
+        {
+            BundleIndexing.GetBundleIndices(indexInTypeBatch, out var bundleIndex, out var innerIndex);
+            var bundleSizeInFloats = ConstrainedDegreesOfFreedom * Vector<float>.Count;
+            ValidateAccumulatedImpulsesSizeInBytes(bundleSizeInFloats * 4);
+            var impulseAddress = (float*)typeBatch.AccumulatedImpulses.Memory + (bundleIndex * bundleSizeInFloats + innerIndex);
+            enumerator.LoopBody(*impulseAddress);
+            for (int i = 1; i < ConstrainedDegreesOfFreedom; ++i)
+            {
+                impulseAddress += Vector<float>.Count;
+                enumerator.LoopBody(*impulseAddress);
+            }
+        }
+        public abstract void ScaleAccumulatedImpulses(ref TypeBatch typeBatch, float scale);
         public abstract void UpdateForBodyMemoryMove(ref TypeBatch typeBatch, int indexInTypeBatch, int bodyIndexInConstraint, int newBodyLocation);
 
         public abstract void Scramble(ref TypeBatch typeBatch, Random random, ref Buffer<ConstraintLocation> handlesToConstraints);
@@ -83,7 +108,7 @@ namespace BepuPhysics.Constraints
             ref Buffer<int> indexToHandleCache, ref RawBuffer bodyReferencesCache, ref RawBuffer prestepCache, ref RawBuffer accumulatedImpulsesCache,
             ref Buffer<ConstraintLocation> handlesToConstraints);
 
-        internal unsafe abstract void GatherActiveConstraints(Bodies bodies, Solver solver, ref QuickList<int, Buffer<int>> sourceHandles, int startIndex, int endIndex, ref TypeBatch targetTypeBatch);
+        internal unsafe abstract void GatherActiveConstraints(Bodies bodies, Solver solver, ref QuickList<int> sourceHandles, int startIndex, int endIndex, ref TypeBatch targetTypeBatch);
 
         internal unsafe abstract void CopySleepingToActive(
             int sourceSet, int sourceBatchIndex, int sourceTypeBatchIndex, int targetBatchIndex, int targetTypeBatchIndex,
@@ -103,23 +128,14 @@ namespace BepuPhysics.Constraints
         public abstract void WarmStart(ref TypeBatch typeBatch, ref Buffer<BodyVelocity> bodyVelocities, int startBundle, int exclusiveEndBundle);
         public abstract void SolveIteration(ref TypeBatch typeBatch, ref Buffer<BodyVelocity> bodyVelocities, int startBundle, int exclusiveEndBundle);
 
+        public abstract void JacobiPrestep(ref TypeBatch typeBatch, Bodies bodies, ref FallbackBatch jacobiBatch, float dt, float inverseDt, int startBundle, int exclusiveEndBundle);
+        public abstract void JacobiWarmStart(ref TypeBatch typeBatch, ref Buffer<BodyVelocity> bodyVelocities, ref FallbackTypeBatchResults jacobiResults, int startBundle, int exclusiveEndBundle);
+        public abstract void JacobiSolveIteration(ref TypeBatch typeBatch, ref Buffer<BodyVelocity> bodyVelocities, ref FallbackTypeBatchResults jacobiResults, int startBundle, int exclusiveEndBundle);
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Prestep(ref TypeBatch typeBatch, Bodies bodies, float dt, float inverseDt)
+        public virtual void IncrementallyUpdateContactData(ref TypeBatch typeBatch, Bodies bodies, float dt, float inverseDt, int startBundle, int end)
         {
-            Prestep(ref typeBatch, bodies, dt, inverseDt, 0, typeBatch.BundleCount);
+            Debug.Fail("A contact data update was scheduled for a type batch that does not have a contact data update implementation.");
         }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void WarmStart(ref TypeBatch typeBatch, ref Buffer<BodyVelocity> bodyVelocities)
-        {
-            WarmStart(ref typeBatch, ref bodyVelocities, 0, typeBatch.BundleCount);
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void SolveIteration(ref TypeBatch typeBatch, ref Buffer<BodyVelocity> bodyVelocities)
-        {
-            SolveIteration(ref typeBatch, ref bodyVelocities, 0, typeBatch.BundleCount);
-        }
-
     }
 
     /// <summary>
@@ -135,10 +151,34 @@ namespace BepuPhysics.Constraints
     //Really, you could use a bunch of composed static generic helpers.
     public abstract class TypeProcessor<TBodyReferences, TPrestepData, TProjection, TAccumulatedImpulse> : TypeProcessor
     {
-
-        static void IncreaseSize<T>(BufferPool rawPool, ref Buffer<T> buffer)
+        protected override int InternalConstrainedDegreesOfFreedom
         {
-            var pool = rawPool.SpecializeFor<T>();
+            get
+            {
+                //We're making an assumption about the layout of memory here. It's not guaranteed to be valid, but it does happen to be for all existing and planned constraints.
+                var dofCount = Unsafe.SizeOf<TAccumulatedImpulse>() / (4 * Vector<float>.Count);
+                Debug.Assert(dofCount * 4 * Vector<float>.Count == Unsafe.SizeOf<TAccumulatedImpulse>(), "One of the assumptions of this DOF calculator is broken. Fix this!");
+                return dofCount;
+            }
+        }
+        protected override void ValidateAccumulatedImpulsesSizeInBytes(int sizeInBytes)
+        {
+            Debug.Assert(sizeInBytes == Unsafe.SizeOf<TAccumulatedImpulse>(), "Your assumptions about memory layout and size are wrong for this type! Fix it!");
+        }
+
+        public override unsafe void ScaleAccumulatedImpulses(ref TypeBatch typeBatch, float scale)
+        {
+            var dofCount = Unsafe.SizeOf<TAccumulatedImpulse>() / Unsafe.SizeOf<Vector<float>>();
+            var broadcastedScale = new Vector<float>(scale);
+            ref var impulsesBase = ref Unsafe.AsRef<Vector<float>>(typeBatch.AccumulatedImpulses.Memory);
+            for (int i = 0; i < dofCount; ++i)
+            {
+                Unsafe.Add(ref impulsesBase, i) *= broadcastedScale;
+            }
+        }
+
+        static void IncreaseSize<T>(BufferPool pool, ref Buffer<T> buffer) where T : struct
+        {
             var old = buffer;
             pool.Take(buffer.Length * 2, out buffer);
             old.CopyTo(0, ref buffer, 0, old.Length);
@@ -159,7 +199,7 @@ namespace BepuPhysics.Constraints
             for (int i = 1; i < bodyCount; ++i)
             {
                 Unsafe.Add(ref targetLane, i * stride) = bodyIndices[i];
-            }            
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -300,12 +340,11 @@ namespace BepuPhysics.Constraints
             var bodyHandles = stackalloc int[bodiesPerConstraint];
             var bodyHandleCollector = new ActiveConstraintBodyHandleCollector(bodies, bodyHandles);
             EnumerateConnectedBodyIndices(ref typeBatch, indexInTypeBatch, ref bodyHandleCollector);
-            ref var targetBatch = ref solver.ActiveSet.Batches[targetBatchIndex];
+            Debug.Assert(targetBatchIndex <= solver.FallbackBatchThreshold,
+                "Constraint transfers should never target the fallback batch. It doesn't have any body handles so attempting to allocate in the same way wouldn't turn out well.");
             //Allocate a spot in the new batch. Note that it does not change the Handle->Constraint mapping in the Solver; that's important when we call Solver.Remove below.
             var constraintHandle = typeBatch.IndexToHandle[indexInTypeBatch];
-            targetBatch.Allocate(constraintHandle, ref bodyHandles[0], bodiesPerConstraint,
-                ref solver.batchReferencedHandles[targetBatchIndex], bodies, typeId, solver.TypeProcessors[typeId],
-                solver.GetMinimumCapacityForType(typeId), solver.bufferPool, out var targetReference);
+            solver.AllocateInBatch(targetBatchIndex, constraintHandle, ref bodyHandles[0], bodiesPerConstraint, typeId, out var targetReference);
 
             BundleIndexing.GetBundleIndices(targetReference.IndexInTypeBatch, out var targetBundle, out var targetInner);
             BundleIndexing.GetBundleIndices(indexInTypeBatch, out var sourceBundle, out var sourceInner);
@@ -328,7 +367,7 @@ namespace BepuPhysics.Constraints
             //However, removes can result in empty batches that require resource reclamation. 
             //Rather than reimplementing that we just reuse the solver's version. 
             //That sort of resource cleanup isn't required on add- everything that is needed already exists, and nothing is going away.
-            solver.RemoveFromBatch(sourceBatchIndex, typeId, indexInTypeBatch);
+            solver.RemoveFromBatch(constraintHandle, sourceBatchIndex, typeId, indexInTypeBatch);
 
             //Don't forget to keep the solver's pointers consistent! We bypassed the usual add procedure, so the solver hasn't been notified yet.
             ref var constraintLocation = ref solver.HandleToConstraint[constraintHandle];
@@ -364,7 +403,7 @@ namespace BepuPhysics.Constraints
 
         public override void Resize(ref TypeBatch typeBatch, int desiredCapacity, BufferPool pool)
         {
-            var desiredConstraintCapacity = BufferPool<int>.GetLowestContainingElementCount(desiredCapacity);
+            var desiredConstraintCapacity = BufferPool.GetCapacityForCount<int>(desiredCapacity);
             if (desiredConstraintCapacity != typeBatch.IndexToHandle.Length)
             {
                 InternalResize(ref typeBatch, pool, desiredConstraintCapacity);
@@ -422,7 +461,8 @@ namespace BepuPhysics.Constraints
                 var sourceIndex = sortedSourceIndices[i];
                 var targetIndex = baseIndex + i;
                 var key = sortKeyGenerator.GetSortKey(baseIndex + i, ref bodyReferences);
-                Debug.Assert(key > previousKey, "After the sort and swap completes, all constraints should be in order.");
+                //Note that this assert uses >= and not >; in a synchronized constraint batch, it's impossible for body references to be duplicated, but fallback batches CAN have duplicates.
+                Debug.Assert(key >= previousKey, "After the sort and swap completes, all constraints should be in order.");
                 Debug.Assert(key == sortedKeys[i], "After the swap goes through, the rederived sort keys should match the previously sorted ones.");
                 previousKey = key;
 
@@ -477,7 +517,7 @@ namespace BepuPhysics.Constraints
             }
         }
 
-        internal unsafe sealed override void GatherActiveConstraints(Bodies bodies, Solver solver, ref QuickList<int, Buffer<int>> sourceHandles, int startIndex, int endIndex, ref TypeBatch targetTypeBatch)
+        internal unsafe sealed override void GatherActiveConstraints(Bodies bodies, Solver solver, ref QuickList<int> sourceHandles, int startIndex, int endIndex, ref TypeBatch targetTypeBatch)
         {
             ref var activeConstraintSet = ref solver.ActiveSet;
             ref var activeBodySet = ref bodies.ActiveSet;

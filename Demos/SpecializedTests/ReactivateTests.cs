@@ -19,8 +19,8 @@ namespace Demos
             camera.Position = new Vector3(-3f, 3, -3f);
             camera.Yaw = MathHelper.Pi * 3f / 4;
             camera.Pitch = MathHelper.Pi * 0.1f;
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks(),
-            new SimulationAllocationSizes
+            Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)),
+            initialAllocationSizes: new SimulationAllocationSizes
             {
                 Bodies = 1,
                 ConstraintCountPerBodyEstimate = 1,
@@ -43,7 +43,6 @@ namespace Demos
                 new RegularGridBuilder(new Vector3(latticeSpacing, 1.5f, latticeSpacing), new Vector3(latticeOffset, 10, latticeOffset), sphereInertia, shapeIndex),
                 new ConstraintlessLatticeBuilder(),
                 width, height, length, Simulation, out var bodyHandles, out var constraintHandles);
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
             Simulation.Deterministic = false;
 
             var staticShape = new Sphere(4);
@@ -78,20 +77,20 @@ namespace Demos
 
         }
 
-        public override void Update(Input input, float dt)
+        public override void Update(Window window, Camera camera, Input input, float dt)
         {
             for (int iterationIndex = 0; iterationIndex < 100; ++iterationIndex)
             {
-                QuickList<int, Buffer<int>>.Create(BufferPool.SpecializeFor<int>(), Simulation.Bodies.ActiveSet.Count, out var bodyIndicestoDeactivate);
+                var bodyIndicesToDeactivate = new QuickList<int>(Simulation.Bodies.ActiveSet.Count, BufferPool);
                 for (int i = 0; i < Simulation.Bodies.ActiveSet.Count; ++i)
                 {
-                    bodyIndicestoDeactivate.AllocateUnsafely() = i;
+                    bodyIndicesToDeactivate.AllocateUnsafely() = i;
                 }
-                Simulation.Sleeper.Sleep(ref bodyIndicestoDeactivate);
+                Simulation.Sleeper.Sleep(ref bodyIndicesToDeactivate);
 
-                bodyIndicestoDeactivate.Dispose(BufferPool.SpecializeFor<int>());
+                bodyIndicesToDeactivate.Dispose(BufferPool);
 
-                QuickList<int, Buffer<int>>.Create(BufferPool.SpecializeFor<int>(), Simulation.Bodies.Sets.Length, out var setsToActivate);
+                var setsToActivate = new QuickList<int>(Simulation.Bodies.Sets.Length, BufferPool);
                 for (int i = 1; i < Simulation.Bodies.Sets.Length; ++i)
                 {
                     if (Simulation.Bodies.Sets[i].Allocated)
@@ -101,11 +100,11 @@ namespace Demos
                 }
 
                 Simulation.Awakener.AwakenSets(ref setsToActivate);
-                setsToActivate.Dispose(BufferPool.SpecializeFor<int>());
+                setsToActivate.Dispose(BufferPool);
 
             }
 
-            base.Update(input, dt);
+            base.Update(window, camera, input, dt);
 
         }
 

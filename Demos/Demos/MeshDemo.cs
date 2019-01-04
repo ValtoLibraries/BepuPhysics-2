@@ -20,8 +20,7 @@ namespace Demos.Demos
             //camera.Yaw = MathHelper.Pi ; 
             camera.Yaw = MathHelper.Pi * 3f / 4;
             //camera.Pitch = MathHelper.PiOver2 * 0.999f;
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks());
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
             var box = new Box(1f, 3f, 2f);
             var capsule = new Capsule(1f, 1f);
@@ -124,7 +123,7 @@ namespace Demos.Demos
         }
 
 
-        static void LoadModel(ContentArchive content, BufferPool pool, string contentName, in Vector3 scaling, out Mesh mesh)
+        public static void LoadModel(ContentArchive content, BufferPool pool, string contentName, in Vector3 scaling, out Mesh mesh)
         {
             var meshContent = content.Load<MeshContent>(contentName);
             pool.Take<Triangle>(meshContent.Triangles.Length, out var triangles);
@@ -193,13 +192,6 @@ namespace Demos.Demos
             pool.Return(ref vertices);
             mesh = new Mesh(triangles, scaling, pool);
         }
-        public override void Update(Input input, float dt)
-        {
-            //if (input.IsDown(OpenTK.Input.Key.P))
-            //    Console.Write("SDF");
-            base.Update(input, dt);
-        }
-
     }
 }
 

@@ -10,42 +10,18 @@ using System.Runtime.CompilerServices;
 using System.Diagnostics;
 using BepuPhysics.Constraints;
 using DemoContentLoader;
+using DemoUtilities;
+using BepuUtilities.Memory;
 
 namespace Demos.Demos
 {
-    //TODO: This would benefit from some convenience work related to storing custom per body data. Callbacks on body add/remove and so on.
-    public class BodyCollisionMasks
-    {
-        ulong[] masks;
-        /// <summary>
-        /// Gets the mask associated with a body's handle.
-        /// </summary>
-        /// <param name="bodyHandle">Body handle to retrieve the collision mask of.</param>
-        /// <returns>Collision mask associated with a body handle.</returns>
-        public ulong this[int bodyHandle]
-        {
-            get
-            {
-                Debug.Assert(bodyHandle >= 0 && bodyHandle < masks.Length, "This collection assumes that all bodies are given a handle for simplicity.");
-                return masks[bodyHandle];
-            }
-            set
-            {
-                if (masks == null || masks.Length <= bodyHandle)
-                {
-                    Array.Resize(ref masks, bodyHandle * 2);
-                }
-                masks[bodyHandle] = value;
-            }
-        }
-    }
-
     //For the purposes of this demo, we have custom collision filtering rules.
     struct RagdollCallbacks : INarrowPhaseCallbacks
     {
-        public BodyCollisionMasks Masks;
+        public BodyProperty<ulong> Masks;
         public void Initialize(Simulation simulation)
         {
+            Masks.Initialize(simulation.Bodies);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -105,6 +81,7 @@ namespace Demos.Demos
 
         public void Dispose()
         {
+            Masks.Dispose();
         }
     }
 
@@ -116,13 +93,7 @@ namespace Demos.Demos
             //Also, the cost of registering different shapes isn't that high for tiny implicit shapes.
             var shapeIndex = simulation.Shapes.Add(shape);
             shape.ComputeInertia(mass, out var inertia);
-            var description = new BodyDescription
-            {
-                Activity = new BodyActivityDescription(0.01f, 32),
-                Collidable = new CollidableDescription(shapeIndex, 0.1f),
-                LocalInertia = inertia,
-                Pose = pose
-            };
+            var description = BodyDescription.CreateDynamic(pose, inertia, new CollidableDescription(shapeIndex, 0.1f), new BodyActivityDescription(0.01f));
             return new BodyReference(simulation.Bodies.Add(description), simulation.Bodies);
         }
 
@@ -183,7 +154,7 @@ namespace Demos.Demos
         }
 
         static void AddArm(float sign, Vector3 localShoulder, RigidPose localChestPose, int chestHandle, int chestLocalIndex, ref ulong chestMask,
-            int limbBaseBitIndex, int ragdollIndex, RigidPose ragdollPose, BodyCollisionMasks masks, SpringSettings constraintSpringSettings, Simulation simulation)
+            int limbBaseBitIndex, int ragdollIndex, RigidPose ragdollPose, BodyProperty<ulong> masks, SpringSettings constraintSpringSettings, Simulation simulation)
         {
             var localElbow = localShoulder + new Vector3(sign * 0.45f, 0, 0);
             var localWrist = localElbow + new Vector3(sign * 0.45f, 0, 0);
@@ -220,16 +191,12 @@ namespace Demos.Demos
             simulation.Solver.Add(chestHandle, upperArm.Handle, BuildAngularMotor());
 
             //Upper Arm-Lower Arm
-            simulation.Solver.Add(upperArm.Handle, lowerArm.Handle, new BallSocket
+            simulation.Solver.Add(upperArm.Handle, lowerArm.Handle, new SwivelHinge
             {
                 LocalOffsetA = Quaternion.Transform(localElbow - upperArmPosition, Quaternion.Conjugate(upperArmOrientation)),
+                LocalSwivelAxisA = new Vector3(1, 0, 0),
                 LocalOffsetB = Quaternion.Transform(localElbow - lowerArmPosition, Quaternion.Conjugate(lowerArmOrientation)),
-                SpringSettings = constraintSpringSettings
-            });
-            simulation.Solver.Add(upperArm.Handle, lowerArm.Handle, new AngularSwivelHinge
-            {
-                SwivelAxisLocalA = new Vector3(1, 0, 0),
-                HingeAxisLocalB = new Vector3(0, 1, 0),
+                LocalHingeAxisB = new Vector3(0, 1, 0),
                 SpringSettings = constraintSpringSettings
             });
             simulation.Solver.Add(upperArm.Handle, lowerArm.Handle, new SwingLimit
@@ -283,13 +250,13 @@ namespace Demos.Demos
             DisableCollision(ref chestMask, chestLocalIndex, ref upperArmMask, upperArmLocalIndex);
             DisableCollision(ref upperArmMask, upperArmLocalIndex, ref lowerArmMask, lowerArmLocalIndex);
             DisableCollision(ref lowerArmMask, lowerArmLocalIndex, ref handMask, handLocalIndex);
-            masks[upperArm.Handle] = upperArmMask;
-            masks[lowerArm.Handle] = lowerArmMask;
-            masks[hand.Handle] = handMask;
+            masks.Allocate(upperArm.Handle) = upperArmMask;
+            masks.Allocate(lowerArm.Handle) = lowerArmMask;
+            masks.Allocate(hand.Handle) = handMask;
         }
 
         static void AddLeg(Vector3 localHip, RigidPose localHipsPose, int hipsHandle, int hipsLocalIndex, ref ulong hipsMask,
-            int limbBaseBitIndex, int ragdollIndex, RigidPose ragdollPose, BodyCollisionMasks masks, SpringSettings constraintSpringSettings, Simulation simulation)
+            int limbBaseBitIndex, int ragdollIndex, RigidPose ragdollPose, BodyProperty<ulong> masks, SpringSettings constraintSpringSettings, Simulation simulation)
         {
             var localKnee = localHip - new Vector3(0, 0.5f, 0);
             var localAnkle = localKnee - new Vector3(0, 0.5f, 0);
@@ -326,16 +293,12 @@ namespace Demos.Demos
             simulation.Solver.Add(hipsHandle, upperLeg.Handle, BuildAngularMotor());
 
             //Upper Leg-Lower Leg
-            simulation.Solver.Add(upperLeg.Handle, lowerLeg.Handle, new BallSocket
+            simulation.Solver.Add(upperLeg.Handle, lowerLeg.Handle, new Hinge
             {
+                LocalHingeAxisA = Quaternion.Transform(new Vector3(1, 0, 0), Quaternion.Conjugate(upperLegOrientation)),
                 LocalOffsetA = Quaternion.Transform(localKnee - upperLegPosition, Quaternion.Conjugate(upperLegOrientation)),
+                LocalHingeAxisB = Quaternion.Transform(new Vector3(1, 0, 0), Quaternion.Conjugate(lowerLegOrientation)),
                 LocalOffsetB = Quaternion.Transform(localKnee - lowerLegPosition, Quaternion.Conjugate(lowerLegOrientation)),
-                SpringSettings = constraintSpringSettings
-            });
-            simulation.Solver.Add(upperLeg.Handle, lowerLeg.Handle, new AngularHinge
-            {
-                HingeAxisLocalA = Quaternion.Transform(new Vector3(1, 0, 0), Quaternion.Conjugate(upperLegOrientation)),
-                HingeAxisLocalB = Quaternion.Transform(new Vector3(1, 0, 0), Quaternion.Conjugate(lowerLegOrientation)),
                 SpringSettings = constraintSpringSettings
             });
             simulation.Solver.Add(upperLeg.Handle, lowerLeg.Handle, new SwingLimit
@@ -381,12 +344,12 @@ namespace Demos.Demos
             DisableCollision(ref hipsMask, hipsLocalIndex, ref upperLegMask, upperLegLocalIndex);
             DisableCollision(ref upperLegMask, upperLegLocalIndex, ref lowerLegMask, lowerLegLocalIndex);
             DisableCollision(ref lowerLegMask, lowerLegLocalIndex, ref footMask, footLocalIndex);
-            masks[upperLeg.Handle] = upperLegMask;
-            masks[lowerLeg.Handle] = lowerLegMask;
-            masks[foot.Handle] = footMask;
+            masks.Allocate(upperLeg.Handle) = upperLegMask;
+            masks.Allocate(lowerLeg.Handle) = lowerLegMask;
+            masks.Allocate(foot.Handle) = footMask;
         }
 
-        static void AddRagdoll(Vector3 position, Quaternion orientation, int ragdollIndex, BodyCollisionMasks masks, Simulation simulation)
+        public static void AddRagdoll(Vector3 position, Quaternion orientation, int ragdollIndex, BodyProperty<ulong> masks, Simulation simulation)
         {
             var ragdollPose = new RigidPose { Position = position, Orientation = orientation };
             var horizontalOrientation = Quaternion.CreateFromAxisAngle(new Vector3(0, 0, 1), MathHelper.PiOver2);
@@ -493,10 +456,10 @@ namespace Demos.Demos
             AddLeg(hipsPose.Position + new Vector3(-0.17f, -0.2f, 0), hipsPose, hips.Handle, hipsLocalIndex, ref hipsMask, 10, ragdollIndex, ragdollPose, masks, springSettings, simulation);
             AddLeg(hipsPose.Position + new Vector3(0.17f, -0.2f, 0), hipsPose, hips.Handle, hipsLocalIndex, ref hipsMask, 13, ragdollIndex, ragdollPose, masks, springSettings, simulation);
 
-            masks[hips.Handle] = hipsMask;
-            masks[abdomen.Handle] = abdomenMask;
-            masks[chest.Handle] = chestMask;
-            masks[head.Handle] = headMask;
+            masks.Allocate(hips.Handle) = hipsMask;
+            masks.Allocate(abdomen.Handle) = abdomenMask;
+            masks.Allocate(chest.Handle) = chestMask;
+            masks.Allocate(head.Handle) = headMask;
         }
 
         public unsafe override void Initialize(ContentArchive content, Camera camera)
@@ -504,10 +467,8 @@ namespace Demos.Demos
             camera.Position = new Vector3(-20, 10, -20);
             camera.Yaw = MathHelper.Pi * 3f / 4;
             camera.Pitch = MathHelper.Pi * 0.05f;
-            var masks = new BodyCollisionMasks();
-            var callbacks = new RagdollCallbacks { Masks = masks };
-            Simulation = Simulation.Create(BufferPool, callbacks);
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            var masks = new BodyProperty<ulong>();
+            Simulation = Simulation.Create(BufferPool, new RagdollCallbacks { Masks = masks }, new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
             int ragdollIndex = 0;
             var spacing = new Vector3(2f, 3, 1);
@@ -521,31 +482,12 @@ namespace Demos.Demos
                 {
                     for (int k = 0; k < length; ++k)
                     {
-                        AddRagdoll(origin + spacing * new Vector3(i, j, k), Quaternion.CreateFromAxisAngle(new Vector3(0,1,0), MathHelper.Pi * 0.05f), ragdollIndex++, masks, Simulation);
+                        AddRagdoll(origin + spacing * new Vector3(i, j, k), Quaternion.CreateFromAxisAngle(new Vector3(0, 1, 0), MathHelper.Pi * 0.05f), ragdollIndex++, masks, Simulation);
                     }
                 }
             }
-
-
-            var staticShape = new Box(300, 1, 300);
-            var staticShapeIndex = Simulation.Shapes.Add(staticShape);
-            var staticDescription = new StaticDescription
-            {
-                Collidable = new CollidableDescription
-                {
-                    Continuity = new ContinuousDetectionSettings { Mode = ContinuousDetectionMode.Discrete },
-                    Shape = staticShapeIndex,
-                    SpeculativeMargin = 0.1f
-                },
-                Pose = new RigidPose
-                {
-                    Position = new Vector3(0, -0.5f, 0),
-                    Orientation = BepuUtilities.Quaternion.Identity
-                }
-            };
-            Simulation.Statics.Add(staticDescription);
-
-
+            
+            Simulation.Statics.Add(new StaticDescription(new Vector3(0, -0.5f, 0), new CollidableDescription(Simulation.Shapes.Add(new Box(300, 1, 300)), 0.1f)));
         }
 
     }

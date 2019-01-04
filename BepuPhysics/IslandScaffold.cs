@@ -19,12 +19,12 @@ namespace BepuPhysics
     internal struct IslandScaffoldTypeBatch
     {
         public int TypeId;
-        public QuickList<int, Buffer<int>> Handles;
+        public QuickList<int> Handles;
 
-        public IslandScaffoldTypeBatch(BufferPool<int> intPool, int typeId, int initialTypeBatchSize)
+        public IslandScaffoldTypeBatch(BufferPool pool, int typeId, int initialTypeBatchSize)
         {
             TypeId = typeId;
-            QuickList<int, Buffer<int>>.Create(intPool, initialTypeBatchSize, out Handles);
+            Handles = new QuickList<int>(initialTypeBatchSize, pool);
         }
     }
 
@@ -32,27 +32,27 @@ namespace BepuPhysics
     internal struct IslandScaffoldConstraintBatch
     {
         public Buffer<int> TypeIdToIndex;
-        public QuickList<IslandScaffoldTypeBatch, Buffer<IslandScaffoldTypeBatch>> TypeBatches;
+        public QuickList<IslandScaffoldTypeBatch> TypeBatches;
         //Note that we use *indices* during island construction, not handles. This protobatch doesn't have to deal with memory moves in between adds, so indices are fine.
         public IndexSet ReferencedBodyIndices;
 
-        public unsafe IslandScaffoldConstraintBatch(Solver solver, BufferPool pool)
+        public unsafe IslandScaffoldConstraintBatch(Solver solver, BufferPool pool, int batchIndex)
         {
             pool.SpecializeFor<int>().Take(solver.TypeProcessors.Length, out TypeIdToIndex);
             Unsafe.InitBlockUnaligned(TypeIdToIndex.Memory, 0xFF, (uint)(TypeIdToIndex.Length * sizeof(int)));
-            QuickList<IslandScaffoldTypeBatch, Buffer<IslandScaffoldTypeBatch>>.Create(pool.SpecializeFor<IslandScaffoldTypeBatch>(), solver.TypeProcessors.Length, out TypeBatches);
-            ReferencedBodyIndices = new IndexSet(pool, solver.bodies.ActiveSet.Count);
+            TypeBatches = new QuickList<IslandScaffoldTypeBatch>(solver.TypeProcessors.Length, pool);
+            ReferencedBodyIndices = batchIndex < solver.FallbackBatchThreshold ? new IndexSet(pool, solver.bodies.ActiveSet.Count) : default;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        ref IslandScaffoldTypeBatch GetOrCreateTypeBatch(int typeId, Solver solver, BufferPool<int> intPool)
+        ref IslandScaffoldTypeBatch GetOrCreateTypeBatch(int typeId, Solver solver, BufferPool pool)
         {
             ref var idMap = ref TypeIdToIndex[typeId];
             if (idMap == -1)
             {
                 idMap = TypeBatches.Count;
                 ref var typeBatch = ref TypeBatches.AllocateUnsafely();
-                typeBatch = new IslandScaffoldTypeBatch(intPool, typeId, solver.GetMinimumCapacityForType(typeId));
+                typeBatch = new IslandScaffoldTypeBatch(pool, typeId, solver.GetMinimumCapacityForType(typeId));
                 return ref typeBatch;
             }
             return ref TypeBatches[idMap];
@@ -75,7 +75,7 @@ namespace BepuPhysics
             }
         }
 
-        public unsafe bool TryAdd(int constraintHandle, Solver solver, BufferPool pool)
+        public unsafe bool TryAdd(int constraintHandle, int batchIndex, Solver solver, BufferPool pool, ref FallbackBatch fallbackBatch)
         {
             ref var constraintLocation = ref solver.HandleToConstraint[constraintHandle];
             var typeProcessor = solver.TypeProcessors[constraintLocation.TypeId];
@@ -88,31 +88,43 @@ namespace BepuPhysics
                 ref solver.ActiveSet.Batches[constraintLocation.BatchIndex].GetTypeBatch(constraintLocation.TypeId),
                 constraintLocation.IndexInTypeBatch,
                 ref enumerator);
-            if (ReferencedBodyIndices.CanFit(ref enumerator.BodyIndices[0], bodiesPerConstraint))
+            if (batchIndex == solver.FallbackBatchThreshold || ReferencedBodyIndices.CanFit(ref enumerator.BodyIndices[0], bodiesPerConstraint))
             {
-                var intPool = pool.SpecializeFor<int>();
-                ref var typeBatch = ref GetOrCreateTypeBatch(constraintLocation.TypeId, solver, intPool);
+                ref var typeBatch = ref GetOrCreateTypeBatch(constraintLocation.TypeId, solver, pool);
                 Debug.Assert(typeBatch.TypeId == constraintLocation.TypeId);
-                typeBatch.Handles.Add(constraintHandle, intPool);
-                for (int i = 0; i < bodiesPerConstraint; ++i)
+                typeBatch.Handles.Add(constraintHandle, pool);
+                if (batchIndex < solver.FallbackBatchThreshold)
                 {
-                    ReferencedBodyIndices.AddUnsafely(enumerator.BodyIndices[i]);
+                    for (int i = 0; i < bodiesPerConstraint; ++i)
+                    {
+                        ReferencedBodyIndices.AddUnsafely(enumerator.BodyIndices[i]);
+                    }
+                }
+                else
+                {
+                    //This is the fallback batch, so we need to fill the fallback batch with relevant information.
+                    var bodyHandles = stackalloc int[bodiesPerConstraint];
+                    for (int i = 0; i < bodiesPerConstraint; ++i)
+                    {
+                        bodyHandles[i] = solver.bodies.ActiveSet.IndexToHandle[bodyIndices[i]];
+                    }
+                    fallbackBatch.AllocateForInactive(constraintHandle, ref *bodyHandles, bodiesPerConstraint, solver.bodies, constraintLocation.TypeId, pool);
                 }
                 return true;
             }
             return false;
         }
-        
+
         public void Dispose(BufferPool pool)
         {
-            var intPool = pool.SpecializeFor<int>();
             for (int i = 0; i < TypeBatches.Count; ++i)
             {
-                TypeBatches[i].Handles.Dispose(intPool);
+                TypeBatches[i].Handles.Dispose(pool);
             }
-            TypeBatches.Dispose(pool.SpecializeFor<IslandScaffoldTypeBatch>());
-            intPool.Return(ref TypeIdToIndex);
-            ReferencedBodyIndices.Dispose(pool);
+            TypeBatches.Dispose(pool);
+            pool.Return(ref TypeIdToIndex);
+            if (ReferencedBodyIndices.flags.Allocated)
+                ReferencedBodyIndices.Dispose(pool);
         }
 
     }
@@ -122,18 +134,18 @@ namespace BepuPhysics
     /// </summary>
     internal struct IslandScaffold
     {
-        public QuickList<int, Buffer<int>> BodyIndices;
-        public QuickList<IslandScaffoldConstraintBatch, Buffer<IslandScaffoldConstraintBatch>> Protobatches;
+        public QuickList<int> BodyIndices;
+        public QuickList<IslandScaffoldConstraintBatch> Protobatches;
+        public FallbackBatch FallbackBatch;
 
-        public IslandScaffold(ref QuickList<int, Buffer<int>> bodyIndices, ref QuickList<int, Buffer<int>> constraintHandles, Solver solver, BufferPool pool) : this()
+        public IslandScaffold(ref QuickList<int> bodyIndices, ref QuickList<int> constraintHandles, Solver solver, BufferPool pool) : this()
         {
             Debug.Assert(bodyIndices.Count > 0, "Don't be tryin' to create islands with no bodies in them! That don't make no sense.");
             //Create a copy of the body indices with just enough space to hold the island's indices. The original list will continue to be reused in the caller.
-            QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), bodyIndices.Count, out BodyIndices);
+            BodyIndices = new QuickList<int>(bodyIndices.Count, pool);
             bodyIndices.Span.CopyTo(0, ref BodyIndices.Span, 0, bodyIndices.Count);
             BodyIndices.Count = bodyIndices.Count;
-            QuickList<IslandScaffoldConstraintBatch, Buffer<IslandScaffoldConstraintBatch>>.Create(
-                pool.SpecializeFor<IslandScaffoldConstraintBatch>(), solver.ActiveSet.Batches.Count, out Protobatches);
+            Protobatches = new QuickList<IslandScaffoldConstraintBatch>(solver.ActiveSet.Batches.Count, pool);
             for (int i = 0; i < constraintHandles.Count; ++i)
             {
                 AddConstraint(constraintHandles[i], solver, pool);
@@ -153,26 +165,28 @@ namespace BepuPhysics
         {
             for (int batchIndex = 0; batchIndex < Protobatches.Count; ++batchIndex)
             {
-                if (Protobatches[batchIndex].TryAdd(constraintHandle, solver, pool))
+                if (Protobatches[batchIndex].TryAdd(constraintHandle, batchIndex, solver, pool, ref FallbackBatch))
                 {
                     return;
                 }
             }
             if (Protobatches.Span.Length == Protobatches.Count)
-                Protobatches.EnsureCapacity(Protobatches.Count + 1, pool.SpecializeFor<IslandScaffoldConstraintBatch>());
+                Protobatches.EnsureCapacity(Protobatches.Count + 1, pool);
+            var newBatchIndex = Protobatches.Count;
             ref var newBatch = ref Protobatches.AllocateUnsafely();
-            newBatch = new IslandScaffoldConstraintBatch(solver, pool);
-            newBatch.TryAdd(constraintHandle, solver, pool);
+            newBatch = new IslandScaffoldConstraintBatch(solver, pool, newBatchIndex);
+            newBatch.TryAdd(constraintHandle, newBatchIndex, solver, pool, ref FallbackBatch);
         }
 
         internal void Dispose(BufferPool pool)
         {
-            BodyIndices.Dispose(pool.SpecializeFor<int>());
+            BodyIndices.Dispose(pool);
             for (int k = 0; k < Protobatches.Count; ++k)
             {
                 Protobatches[k].Dispose(pool);
             }
-            Protobatches.Dispose(pool.SpecializeFor<IslandScaffoldConstraintBatch>());
+            Protobatches.Dispose(pool);
+            FallbackBatch.Dispose(pool);
         }
     }
 

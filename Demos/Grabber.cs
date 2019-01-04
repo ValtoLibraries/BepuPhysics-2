@@ -21,7 +21,9 @@ namespace Demos
         BodyReference body;
         float t;
         Vector3 localGrabPoint;
-        int motorHandle;
+        Quaternion targetOrientation;
+        int linearMotorHandle;
+        int angularMotorHandle;
 
         struct RayHitHandler : IRayHitHandler
         {
@@ -48,38 +50,25 @@ namespace Demos
                 }
             }
         }
-
-        Vector3 GetRayDirection(Camera camera, bool mouseLocked, in Vector2 normalizedMousePosition)
+        
+        void CreateMotorDescription(in Vector3 target, float inverseMass, out OneBodyLinearServo linearDescription, out OneBodyAngularServo angularDescription)
         {
-            //The ray direction depends on the camera and whether the camera is locked.
-            if (mouseLocked)
-            {
-                return camera.Forward;
-            }
-            var unitPlaneHalfHeight = MathF.Tan(camera.FieldOfView * 0.5f);
-            var unitPlaneHalfWidth = unitPlaneHalfHeight * camera.AspectRatio;
-            var localRayDirection = new Vector3(
-                new Vector2(unitPlaneHalfWidth, unitPlaneHalfHeight) * 2 * new Vector2(normalizedMousePosition.X - 0.5f, 0.5f - normalizedMousePosition.Y), -1);
-            Quaternion.TransformWithoutOverlap(localRayDirection, camera.OrientationQuaternion, out var rayDirection);
-            return rayDirection;
-        }
-
-        void CreateMotorDescription(in Vector3 target, float inverseMass, out GrabServo description)
-        {
-            description = new GrabServo
+            linearDescription = new OneBodyLinearServo
             {
                 LocalOffset = localGrabPoint,
                 Target = target,
-                ServoSettings = new ServoSettings
-                {
-                    MaximumSpeed = float.MaxValue,
-                    MaximumForce = 240f / inverseMass
-                },
-                SpringSettings = new SpringSettings(10, 2),
+                ServoSettings = new ServoSettings(float.MaxValue, 0, 360 / inverseMass),
+                SpringSettings = new SpringSettings(5, 2),
+            };
+            angularDescription = new OneBodyAngularServo
+            {
+                TargetOrientation = targetOrientation,
+                ServoSettings = new ServoSettings(float.MaxValue, 0, 360 / inverseMass),
+                SpringSettings = new SpringSettings(5, 2),
             };
         }
 
-        public void Update(Simulation simulation, Camera camera, bool mouseLocked, bool shouldGrab, in Vector2 normalizedMousePosition)
+        public void Update(Simulation simulation, Camera camera, bool mouseLocked, bool shouldGrab, in Quaternion rotation, in Vector2 normalizedMousePosition)
         {
             var bodyExists = body.Exists;
             if (active && (!shouldGrab || !bodyExists))
@@ -89,13 +78,15 @@ namespace Demos
                 {
                     //If the body wasn't removed, then the constraint should be removed.
                     //(Body removal forces connected constraints to removed, so in that case we wouldn't have to worry about it.)
-                    simulation.Solver.Remove(motorHandle);
+                    simulation.Solver.Remove(linearMotorHandle);
+                    if (!Bodies.HasLockedInertia(body.LocalInertia.InverseInertiaTensor))
+                        simulation.Solver.Remove(angularMotorHandle);
                 }
                 body = new BodyReference();
             }
             else if (shouldGrab && !active)
             {
-                var rayDirection = GetRayDirection(camera, mouseLocked, normalizedMousePosition);
+                var rayDirection = camera.GetRayDirection(mouseLocked, normalizedMousePosition);
                 var hitHandler = default(RayHitHandler);
                 hitHandler.T = float.MaxValue;
                 simulation.RayCast(camera.Position, rayDirection, float.MaxValue, ref hitHandler);
@@ -106,9 +97,12 @@ namespace Demos
                     body = new BodyReference(hitHandler.HitCollidable.Handle, simulation.Bodies);
                     var hitLocation = camera.Position + rayDirection * t;
                     RigidPose.TransformByInverse(hitLocation, body.Pose, out localGrabPoint);
+                    targetOrientation = body.Pose.Orientation;
                     active = true;
-                    CreateMotorDescription(hitLocation, body.LocalInertia.InverseMass, out var motorDescription);
-                    motorHandle = simulation.Solver.Add(body.Handle, ref motorDescription);
+                    CreateMotorDescription(hitLocation, body.LocalInertia.InverseMass, out var linearDescription, out var angularDescription);
+                    linearMotorHandle = simulation.Solver.Add(body.Handle, ref linearDescription);
+                    if (!Bodies.HasLockedInertia(body.LocalInertia.InverseInertiaTensor))
+                        angularMotorHandle = simulation.Solver.Add(body.Handle, ref angularDescription);
                 }
             }
             else if (active)
@@ -116,33 +110,25 @@ namespace Demos
                 Quaternion.TransformWithoutOverlap(localGrabPoint, body.Pose.Orientation, out var grabPointOffset);
                 var grabbedPoint = grabPointOffset + body.Pose.Position;
 
-                var rayDirection = GetRayDirection(camera, mouseLocked, normalizedMousePosition);
+                var rayDirection = camera.GetRayDirection(mouseLocked, normalizedMousePosition);
                 var targetPoint = camera.Position + rayDirection * t;
-                
-                CreateMotorDescription(targetPoint, body.LocalInertia.InverseMass, out var motorDescription);
-                simulation.Solver.ApplyDescription(motorHandle, ref motorDescription);
+                targetOrientation = Quaternion.Concatenate(targetOrientation, rotation);
+
+                CreateMotorDescription(targetPoint, body.LocalInertia.InverseMass, out var linearDescription, out var angularDescription);
+                simulation.Solver.ApplyDescription(linearMotorHandle, ref linearDescription);
+                if (!Bodies.HasLockedInertia(body.LocalInertia.InverseInertiaTensor))
+                    simulation.Solver.ApplyDescription(angularMotorHandle, ref angularDescription);
                 body.Activity.TimestepsUnderThresholdCount = 0;
             }
         }
-        const float MaximumLength = 3;
 
         public void Draw(LineExtractor lines, Camera camera, bool mouseLocked, bool shouldGrab, in Vector2 normalizedMousePosition)
         {
-            if (active && body.Exists)
-            {
-                RigidPose.Transform(localGrabPoint, body.Pose, out var grabbedPoint);
-                var rayDirection = GetRayDirection(camera, mouseLocked, normalizedMousePosition);
-                var targetPoint = camera.Position + rayDirection * t;
-                var distance = Vector3.Distance(grabbedPoint, targetPoint);
-                var fractionOfMaximum = MathF.Min(distance / MaximumLength, 1);
-                lines.Allocate() = new LineInstance(grabbedPoint, targetPoint, new Vector3(1, 0, 0) * fractionOfMaximum + new Vector3(1, 1, 1) * (1 - fractionOfMaximum), new Vector3());
-            }
-            else if (shouldGrab && !active && mouseLocked)
+            if (shouldGrab && !active && mouseLocked)
             {
                 //Draw a crosshair if there is no mouse cursor.
-                var center = camera.Position + camera.Forward * (camera.NearClip * 2);
-
-                var crosshairLength = 0.02f * camera.NearClip * MathF.Tan(camera.FieldOfView * 0.5f);
+                var center = camera.Position + camera.Forward * (camera.NearClip * 10);
+                var crosshairLength = 0.1f * camera.NearClip * MathF.Tan(camera.FieldOfView * 0.5f);
                 var rightOffset = camera.Right * crosshairLength;
                 var upOffset = camera.Up * crosshairLength;
                 lines.Allocate() = new LineInstance(center - rightOffset, center + rightOffset, new Vector3(1, 0, 0), new Vector3());
@@ -150,4 +136,6 @@ namespace Demos
             }
         }
     }
+
+
 }

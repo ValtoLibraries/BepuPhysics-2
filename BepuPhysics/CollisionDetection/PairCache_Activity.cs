@@ -30,7 +30,7 @@ namespace BepuPhysics.CollisionDetection
         internal void ResizeSetsCapacity(int setsCapacity, int potentiallyAllocatedCount)
         {
             Debug.Assert(setsCapacity >= potentiallyAllocatedCount && potentiallyAllocatedCount <= SleepingSets.Length);
-            setsCapacity = BufferPool<SleepingSet>.GetLowestContainingElementCount(setsCapacity);
+            setsCapacity = BufferPool.GetCapacityForCount<SleepingSet>(setsCapacity);
             if (SleepingSets.Length != setsCapacity)
             {
                 var oldCapacity = SleepingSets.Length;
@@ -52,7 +52,7 @@ namespace BepuPhysics.CollisionDetection
         }
 
         [Conditional("DEBUG")]
-        internal unsafe void ValidateConstraintHandleToPairMapping(ref QuickList<WorkerPairCache, Array<WorkerPairCache>> caches, bool ignoreStale)
+        internal unsafe void ValidateConstraintHandleToPairMapping(ref ArrayList<WorkerPairCache> caches, bool ignoreStale)
         {
             for (int i = 0; i < Mapping.Count; ++i)
             {
@@ -95,7 +95,7 @@ namespace BepuPhysics.CollisionDetection
                 {
                     ref var typeBatch = ref batch.TypeBatches[typeBatchIndex];
                     Debug.Assert(typeBatch.ConstraintCount > 0, "If a type batch exists, it should contain constraints.");
-                    if (IsContactBatch(typeBatch.TypeId))
+                    if (NarrowPhase.IsContactConstraintType(typeBatch.TypeId))
                     {
                         for (int indexInTypeBatch = 0; indexInTypeBatch < typeBatch.ConstraintCount; ++indexInTypeBatch)
                         {
@@ -126,18 +126,17 @@ namespace BepuPhysics.CollisionDetection
 
             //Also note that we only deal with one worker cache. Wake ups just dump new caches into the first thread. This works out since
             //the actual pair cache modification is locally sequential right now.
-            if (NextWorkerCaches.Span.Allocated && NextWorkerCaches.Count > 0 && NextWorkerCaches[0].collisionCaches.Allocated)
+            if (NextWorkerCaches.Allocated && NextWorkerCaches.Count > 0 && NextWorkerCaches[0].collisionCaches.Allocated)
                 return ref NextWorkerCaches[0];
-            if (workerCaches.Span.Allocated)
+            if (workerCaches.Allocated)
                 return ref workerCaches[0];
             //No caches exist yet; this must be an external call taking place before the first update. Lazily initialize one worker cache.
-            QuickList<WorkerPairCache, Array<WorkerPairCache>>.Create(new PassthroughArrayPool<WorkerPairCache>(), 1, out workerCaches);
-            var preallocationSizesPool = pool.SpecializeFor<WorkerPairCache.PreallocationSizes>();
-            QuickList<WorkerPairCache.PreallocationSizes, Buffer<WorkerPairCache.PreallocationSizes>>.Create(preallocationSizesPool, 1, out var constraints);
-            QuickList<WorkerPairCache.PreallocationSizes, Buffer<WorkerPairCache.PreallocationSizes>>.Create(preallocationSizesPool, 1, out var collisions);
+            workerCaches = new ArrayList<WorkerPairCache>(1);
+            var constraints = new QuickList<WorkerPairCache.PreallocationSizes>(1, pool);
+            var collisions = new QuickList<WorkerPairCache.PreallocationSizes>(1, pool);
             workerCaches.AllocateUnsafely() = new WorkerPairCache(0, pool, ref constraints, ref collisions, 0);
-            constraints.Dispose(preallocationSizesPool);
-            collisions.Dispose(preallocationSizesPool);
+            constraints.Dispose(pool);
+            collisions.Dispose(pool);
             return ref workerCaches[0];
         }
 
@@ -175,14 +174,14 @@ namespace BepuPhysics.CollisionDetection
                     {
                         pointers.CollisionDetectionCache = new PairCacheIndex();
                     }
-                    Mapping.AddUnsafely(ref pair.Pair, ref pointers);
+                    Mapping.AddUnsafely(ref pair.Pair, pointers);
                 }
             }
         }
 
         internal void RemoveReferenceIfContactConstraint(int handle, int typeId)
         {
-            if (IsContactBatch(typeId))
+            if (NarrowPhase.IsContactConstraintType(typeId))
             {
                 var removed = Mapping.FastRemove(ref ConstraintHandleToPair[handle].Pair);
                 Debug.Assert(removed, "If a contact constraint is being directly removed, it must exist within the pair mapping- " +

@@ -9,7 +9,10 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
 {
     public interface ISupportFinder<TShape, TShapeWide> where TShape : IConvexShape where TShapeWide : IShapeWide<TShape>
     {
-        void ComputeSupport(ref TShapeWide shape, ref Matrix3x3Wide orientation, ref Vector3Wide direction, out Vector3Wide support);
+        bool HasMargin { get; }
+        void GetMargin(in TShapeWide shape, out Vector<float> margin);
+        void ComputeLocalSupport(in TShapeWide shape, in Vector3Wide direction, out Vector3Wide support);
+        void ComputeSupport(in TShapeWide shape, in Matrix3x3Wide orientation, in Vector3Wide direction, out Vector3Wide support);
     }
 
     public struct GJKDistanceTester<TShapeA, TShapeWideA, TSupportFinderA, TShapeB, TShapeWideB, TSupportFinderB> : IPairDistanceTester<TShapeWideA, TShapeWideB>
@@ -26,16 +29,15 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void SampleMinkowskiDifference(
-            ref TShapeWideA a, ref Matrix3x3Wide rA, ref TSupportFinderA supportFinderA,
-            ref TShapeWideB b, ref Matrix3x3Wide rB, ref TSupportFinderB supportFinderB, ref Vector3Wide offsetB, ref Vector3Wide direction,
+            in TShapeWideA a, in Matrix3x3Wide rA, ref TSupportFinderA supportFinderA,
+            in TShapeWideB b, in Matrix3x3Wide rB, ref TSupportFinderB supportFinderB, in Vector3Wide offsetB, in Vector3Wide direction,
             out Vector3Wide supportA, out Vector3Wide support)
         {
-            supportFinderA.ComputeSupport(ref a, ref rA, ref direction, out supportA);
+            supportFinderA.ComputeSupport(a, rA, direction, out supportA);
             Vector3Wide.Negate(direction, out var negatedDirection);
-            supportFinderB.ComputeSupport(ref b, ref rB, ref negatedDirection, out var supportB);
+            supportFinderB.ComputeSupport(b, rB, negatedDirection, out var supportB);
             Vector3Wide.Add(supportB, offsetB, out supportB);
             Vector3Wide.Subtract(supportA, supportB, out support);
-
         }
 
         struct Simplex
@@ -193,7 +195,7 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             Vector3Wide.Add(cContribution, closestCandidate, out closestCandidate);
             Vector3Wide.Add(aOnAContribution, bOnAContribution, out var closestACandidate);
             Vector3Wide.Add(cOnAContribution, closestACandidate, out closestACandidate);
-            Vector3Wide.LengthSquared(closestCandidate, out var distanceSquaredCandidate);          
+            Vector3Wide.LengthSquared(closestCandidate, out var distanceSquaredCandidate);
             var combinedMask = Vector.BitwiseAnd(mask, projectionInTriangle);
             Select(ref combinedMask,
                 ref distanceSquared, ref closest, ref closestA, ref featureId,
@@ -332,7 +334,7 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
         }
 
 
-        public void Test(ref TShapeWideA a, ref TShapeWideB b, ref Vector3Wide offsetB, ref QuaternionWide orientationA, ref QuaternionWide orientationB,
+        public void Test(in TShapeWideA a, in TShapeWideB b, in Vector3Wide offsetB, in QuaternionWide orientationA, in QuaternionWide orientationB, in Vector<int> inactiveLanes,
             out Vector<int> intersected, out Vector<float> distance, out Vector3Wide closestA, out Vector3Wide normal)
         {
             Matrix3x3Wide.CreateFromQuaternion(orientationA, out var rA);
@@ -341,18 +343,35 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             var supportFinderB = default(TSupportFinderB);
             Simplex simplex;
             //TODO: It would be pretty easy to initialize to a triangle or tetrahedron. Might be worth it.
-            SampleMinkowskiDifference(ref a, ref rA, ref supportFinderA, ref b, ref rB, ref supportFinderB, ref offsetB, ref offsetB, out simplex.AOnA, out simplex.A);
+            SampleMinkowskiDifference(a, rA, ref supportFinderA, b, rB, ref supportFinderB, offsetB, offsetB, out simplex.AOnA, out simplex.A);
             simplex.Count = new Vector<int>(1);
 
             //GJK is a pretty branchy algorithm that doesn't map perfectly to widely vectorized implementations. We'll be using an SPMD model- if any SIMD lane needs to continue 
             //working, all lanes continue to work, and the unnecessary lane results are discarded.
             //In the context of the engine, distance tests are often quite coherent (by virtue of being used with sweeps), so we shouldn't often see pathologically low occupancy.
-            var terminatedMask = Vector<int>.Zero;
+            var terminatedMask = inactiveLanes;
             intersected = Vector<int>.Zero;
             int iterationCount = 0;
             //Note that we use hardcoded defaults if this is default constructed.
             var epsilon = new Vector<float>(TerminationEpsilon > 0 ? TerminationEpsilon : TerminationEpsilonDefault);
             var containmentEpsilon = new Vector<float>(ContainmentEpsilon > 0 ? ContainmentEpsilon : ContainmentEpsilonDefault);
+            //Use the JIT's ability to optimize away branches with generic type knowledge to set appropriate containment epsilons for shapes that have actual margins.
+            if (supportFinderA.HasMargin && supportFinderB.HasMargin)
+            {
+                supportFinderA.GetMargin(a, out var marginA);
+                supportFinderB.GetMargin(b, out var marginB);
+                containmentEpsilon = Vector.Max(containmentEpsilon, marginA + marginB);
+            }
+            else if (supportFinderA.HasMargin)
+            {
+                supportFinderA.GetMargin(a, out var marginA);
+                containmentEpsilon = Vector.Max(containmentEpsilon, marginA);
+            }
+            else if (supportFinderB.HasMargin)
+            {
+                supportFinderB.GetMargin(b, out var marginB);
+                containmentEpsilon = Vector.Max(containmentEpsilon, marginB);
+            }
             var containmentEpsilonSquared = containmentEpsilon * containmentEpsilon;
             Vector<float> distanceSquared = new Vector<float>(float.MaxValue);
             while (true)
@@ -370,7 +389,6 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
                 if (Vector.EqualsAll(terminatedMask, -Vector<int>.One))
                     break;
 
-
                 //This is similar to the v vs simplexClosest test later, except this termination condition is immune to cycles.
                 //It's used in conjunction with the later test because it is less aggressive- typically, the epsilon test will save an iteration.
                 //This allows a more aggressive fallback termination compared to a fixed maximum iteration count without affecting the termination result.
@@ -384,7 +402,7 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
                     break;
 
                 Vector3Wide.Negate(simplexClosest, out var sampleDirection);
-                SampleMinkowskiDifference(ref a, ref rA, ref supportFinderA, ref b, ref rB, ref supportFinderB, ref offsetB, ref sampleDirection, out var vA, out var v);
+                SampleMinkowskiDifference(a, rA, ref supportFinderA, b, rB, ref supportFinderB, offsetB, sampleDirection, out var vA, out var v);
 
                 //If the newly sampled is no better than the simplex-identified closest point, the lane is done.
                 Vector3Wide.Subtract(v, simplexClosest, out var progressOffset);
@@ -419,9 +437,13 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             var inverseDistance = Vector<float>.One / distance;
             //The containment epsilon acts as a margin around shapes that guarantees that normals remain numerically valid.
             //To avoid a case where the distance goes from near epsilon to intersecting in sub-epsilon motion, we report the distance as be adjusted by the containment epsilon. 
-            //In other words, the shapes are spherically expanded a little. Not ideal, but not horrible.
+            //In other words, the shapes are spherically expanded a little. Not ideal for shapes that don't actually have margins, but not horrible.
             distance -= containmentEpsilon;
             Vector3Wide.Scale(normal, inverseDistance, out normal);
+
+            //For shapes with substantial margins, it's important to compensate for the margin.
+            Vector3Wide.Scale(normal, -containmentEpsilon, out var closestAMarginOffset);
+            Vector3Wide.Add(closestAMarginOffset, closestA, out closestA);
         }
     }
 }

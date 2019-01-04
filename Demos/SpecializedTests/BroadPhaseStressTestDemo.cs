@@ -20,8 +20,7 @@ namespace Demos.SpecializedTests
             camera.Position = new Vector3(-20f, 13, -20f);
             camera.Yaw = MathHelper.Pi * 3f / 4;
             camera.Pitch = MathHelper.Pi * 0.1f;
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks());
-            //Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
             var shape = new Sphere(0.5f);
             shape.ComputeInertia(1, out var sphereInertia);
@@ -85,15 +84,17 @@ namespace Demos.SpecializedTests
                     }
                 }
             }
+            refineTimes = new TimingsRingBuffer(sampleCount, BufferPool);
+            testTimes = new TimingsRingBuffer(sampleCount, BufferPool);
         }
 
         const int sampleCount = 128;
-        TimingsRingBuffer refineTimes = new TimingsRingBuffer(sampleCount);
-        TimingsRingBuffer testTimes = new TimingsRingBuffer(sampleCount);
+        TimingsRingBuffer refineTimes;
+        TimingsRingBuffer testTimes;
         long frameCount;
-        public override void Update(Input input, float dt)
+        public override void Update(Window window, Camera camera, Input input, float dt)
         {
-            base.Update(input, dt);
+            base.Update(window, camera, input, dt);
             refineTimes.Add(Simulation.Timings[Simulation.BroadPhase]);
             testTimes.Add(Simulation.Timings[Simulation.BroadPhaseOverlapFinder]);
             if (frameCount++ % sampleCount == 0)

@@ -11,7 +11,7 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
 {
     public interface IPairDistanceTester<TShapeWideA, TShapeWideB>
     {
-        void Test(ref TShapeWideA a, ref TShapeWideB b, ref Vector3Wide offsetB, ref QuaternionWide orientationA, ref QuaternionWide orientationB,
+        void Test(in TShapeWideA a, in TShapeWideB b, in Vector3Wide offsetB, in QuaternionWide orientationA, in QuaternionWide orientationB, in Vector<int> inactiveLanes,
             out Vector<int> intersected, out Vector<float> distance, out Vector3Wide closestA, out Vector3Wide normal);
     }
 
@@ -145,8 +145,8 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
 
                 //Integrate orientations to sample locations.
                 var halfSamples = samples * 0.5f;
-                PoseIntegrator.Integrate(initialOrientationA, angularA, halfSamples, out sampleOrientationA);
-                PoseIntegrator.Integrate(initialOrientationB, angularB, halfSamples, out sampleOrientationB);
+                PoseIntegration.Integrate(initialOrientationA, angularA, halfSamples, out sampleOrientationA);
+                PoseIntegration.Integrate(initialOrientationB, angularB, halfSamples, out sampleOrientationB);
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -187,7 +187,7 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public void AdjustHitLocation(in Quaternion initialOrientationA, in BodyVelocity velocityA, float t0, ref Vector3 hitLocation)
             {
-                PoseIntegrator.Integrate(new RigidPose { Orientation = initialOrientationA }, velocityA, t0, out var integratedPose);
+                PoseIntegration.Integrate(new RigidPose { Orientation = initialOrientationA }, velocityA, t0, out var integratedPose);
                 Quaternion.Transform(LocalPoseA.Position, integratedPose.Orientation, out var childOffset);
                 hitLocation = hitLocation + integratedPose.Position + childOffset;
             }
@@ -206,11 +206,11 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
                 //The orientation of the child itself is the product of localOrientation * bodyOrientation.
                 var halfSamples = samples * 0.5f;
                 RigidPoses.Broadcast(LocalPoseA, out var localPosesA);
-                PoseIntegrator.Integrate(initialOrientationA, angularA, halfSamples, out var integratedOrientationA);
+                PoseIntegration.Integrate(initialOrientationA, angularA, halfSamples, out var integratedOrientationA);
                 Compound.GetRotatedChildPose(localPosesA, integratedOrientationA, out var childPositionA, out sampleOrientationA);
 
                 RigidPoses.Broadcast(LocalPoseB, out var localPosesB);
-                PoseIntegrator.Integrate(initialOrientationB, angularB, halfSamples, out var integratedOrientationB);
+                PoseIntegration.Integrate(initialOrientationB, angularB, halfSamples, out var integratedOrientationB);
                 Compound.GetRotatedChildPose(localPosesB, integratedOrientationB, out var childPositionB, out sampleOrientationB);
 
                 Vector3Wide.Subtract(childPositionB, childPositionA, out var netOffsetB);
@@ -369,7 +369,7 @@ namespace BepuPhysics.CollisionDetection.SweepTasks
             int iterationIndex = 0;
             while (true)
             {
-                pairTester.Test(ref wideA, ref wideB, ref sampleOffsetB, ref sampleOrientationA, ref sampleOrientationB,
+                pairTester.Test(wideA, wideB, sampleOffsetB, sampleOrientationA, sampleOrientationB, Vector<int>.Zero,
                     out intersections, out distances, out closestA, out normals);
 
                 Vector3Wide.Dot(normals, wideLinearVelocityB, out var linearVelocityAlongNormal);

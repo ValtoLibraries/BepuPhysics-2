@@ -13,7 +13,7 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Test(
             ref CapsuleWide a, ref CapsuleWide b, ref Vector<float> speculativeMargin,
-            ref Vector3Wide offsetB, ref QuaternionWide orientationA, ref QuaternionWide orientationB,
+            ref Vector3Wide offsetB, ref QuaternionWide orientationA, ref QuaternionWide orientationB, int pairCount,
             out Convex2ContactManifoldWide manifold)
         {
             //Compute the closest points between the two line segments. No clamping to begin with.
@@ -60,12 +60,12 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
 
             //In the event that the two capsule axes are coplanar, we accept the whole interval as a source of contact.
             //As the axes drift away from coplanarity, the accepted interval rapidly narrows to zero length, centered on ta and tb.
-            //We rate the degree of coplanarity based on the angle between the capsule axis and the plane defined by the box edge and contact normal:
+            //We rate the degree of coplanarity based on the angle between the capsule axis and the plane defined by the opposing segment and contact normal:
             //sin(angle) = dot(da, (db x normal)/||db x normal||)
             //Finally, note that we are dealing with extremely small angles, and for small angles sin(angle) ~= angle,
             //and also that fade behavior is completely arbitrary, so we can directly use squared angle without any concern.
             //angle^2 ~= dot(da, (db x normal))^2 / ||db x normal||^2
-            //Note that if ||db x normal|| is the zero, then any da should be accepted as being coplanar because there is no restriction. ConditionalSelect away the discontinuity.
+            //Note that if ||db x normal|| is zero, then any da should be accepted as being coplanar because there is no restriction. ConditionalSelect away the discontinuity.
             Vector3Wide.CrossWithoutOverlap(db, manifold.Normal, out var planeNormal);
             Vector3Wide.LengthSquared(planeNormal, out var planeNormalLengthSquared);
             Vector3Wide.Dot(da, planeNormal, out var numeratorUnsquared);
@@ -128,12 +128,12 @@ namespace BepuPhysics.CollisionDetection.CollisionTasks
             //Worth looking into later.
         }
 
-        public void Test(ref CapsuleWide a, ref CapsuleWide b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, ref QuaternionWide orientationB, out Convex2ContactManifoldWide manifold)
+        public void Test(ref CapsuleWide a, ref CapsuleWide b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, ref QuaternionWide orientationB, int pairCount, out Convex2ContactManifoldWide manifold)
         {
             throw new NotImplementedException();
         }
 
-        public void Test(ref CapsuleWide a, ref CapsuleWide b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, out Convex2ContactManifoldWide manifold)
+        public void Test(ref CapsuleWide a, ref CapsuleWide b, ref Vector<float> speculativeMargin, ref Vector3Wide offsetB, int pairCount, out Convex2ContactManifoldWide manifold)
         {
             throw new NotImplementedException();
         }

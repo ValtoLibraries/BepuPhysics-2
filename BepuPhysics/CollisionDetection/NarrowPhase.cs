@@ -79,6 +79,7 @@ namespace BepuPhysics.CollisionDetection
         RemoveConstraintsFromBodyLists,
         ReturnConstraintHandles,
         RemoveConstraintFromBatchReferencedHandles,
+        RemoveConstraintsFromFallbackBatch,
         RemoveConstraintFromTypeBatch,
         FlushPairCacheChanges
     }
@@ -112,7 +113,7 @@ namespace BepuPhysics.CollisionDetection
             var id = contactConstraintAccessor.ConstraintTypeId;
             if (contactConstraintAccessors == null || contactConstraintAccessors.Length <= id)
                 contactConstraintAccessors = new ContactConstraintAccessor[id + 1];
-            if(contactConstraintAccessors[id] != null)
+            if (contactConstraintAccessors[id] != null)
             {
                 throw new InvalidOperationException($"Cannot register accessor for type id {id}; it is already registered by {contactConstraintAccessors[id]}.");
             }
@@ -124,6 +125,17 @@ namespace BepuPhysics.CollisionDetection
             flushWorkerLoop = FlushWorkerLoop;
         }
 
+        /// <summary>
+        /// Gets whether a constraint type id maps to a contact constraint.
+        /// </summary>
+        /// <param name="constraintTypeId">Id of the constraint to check.</param>
+        /// <returns>True if the type id refers to a contact constraint. False otherwise.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool IsContactConstraintType(int constraintTypeId)
+        {
+            return constraintTypeId < PairCache.CollisionConstraintTypeCount;
+        }
+        
         public void Prepare(float dt, IThreadDispatcher threadDispatcher = null)
         {
             timestepDuration = dt;
@@ -136,10 +148,9 @@ namespace BepuPhysics.CollisionDetection
         protected abstract void OnPreflush(IThreadDispatcher threadDispatcher, bool deterministic);
         protected abstract void OnPostflush(IThreadDispatcher threadDispatcher);
 
-
-        bool deterministic;
+        
         int flushJobIndex;
-        QuickList<NarrowPhaseFlushJob, Buffer<NarrowPhaseFlushJob>> flushJobs;
+        QuickList<NarrowPhaseFlushJob> flushJobs;
         IThreadDispatcher threadDispatcher;
         Action<int> flushWorkerLoop;
         void FlushWorkerLoop(int workerIndex)
@@ -159,10 +170,13 @@ namespace BepuPhysics.CollisionDetection
                     ConstraintRemover.RemoveConstraintsFromBodyLists();
                     break;
                 case NarrowPhaseFlushJobType.ReturnConstraintHandles:
-                    ConstraintRemover.ReturnConstraintHandles(deterministic, threadPool);
+                    ConstraintRemover.ReturnConstraintHandles(threadPool);
                     break;
                 case NarrowPhaseFlushJobType.RemoveConstraintFromBatchReferencedHandles:
                     ConstraintRemover.RemoveConstraintsFromBatchReferencedHandles();
+                    break;
+                case NarrowPhaseFlushJobType.RemoveConstraintsFromFallbackBatch:
+                    ConstraintRemover.RemoveConstraintsFromFallbackBatch();
                     break;
                 case NarrowPhaseFlushJobType.RemoveConstraintFromTypeBatch:
                     ConstraintRemover.RemoveConstraintsFromTypeBatch(job.Index);
@@ -174,24 +188,26 @@ namespace BepuPhysics.CollisionDetection
 
         }
 
-        public void Flush(IThreadDispatcher threadDispatcher = null, bool deterministic = false)
+        public void Flush(IThreadDispatcher threadDispatcher = null)
         {
+            var deterministic = threadDispatcher != null && Simulation.Deterministic;
             OnPreflush(threadDispatcher, deterministic);
             //var start = Stopwatch.GetTimestamp();
-            var jobPool = Pool.SpecializeFor<NarrowPhaseFlushJob>();
-            QuickList<NarrowPhaseFlushJob, Buffer<NarrowPhaseFlushJob>>.Create(jobPool, 128, out flushJobs);
+            flushJobs = new QuickList<NarrowPhaseFlushJob>(128, Pool);
             PairCache.PrepareFlushJobs(ref flushJobs);
-            //We indirectly pass the determinism state; it's used by the constraint remover bookkeeping.
-            this.deterministic = deterministic;
-            var removalBatchJobCount = ConstraintRemover.CreateFlushJobs();
+            var removalBatchJobCount = ConstraintRemover.CreateFlushJobs(deterministic);
             //Note that we explicitly add the constraint remover jobs here. 
             //The constraint remover can be used in two ways- sleeper style, and narrow phase style.
             //In sleeping, we're not actually removing constraints from the simulation completely, so it requires fewer jobs.
             //The constraint remover just lets you choose which jobs to call. The narrow phase needs all of them.
-            flushJobs.EnsureCapacity(flushJobs.Count + removalBatchJobCount + 3, jobPool);
+            flushJobs.EnsureCapacity(flushJobs.Count + removalBatchJobCount + 4, Pool);
             flushJobs.AddUnsafely(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.RemoveConstraintsFromBodyLists });
             flushJobs.AddUnsafely(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.ReturnConstraintHandles });
             flushJobs.AddUnsafely(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.RemoveConstraintFromBatchReferencedHandles });
+            if (Solver.ActiveSet.Batches.Count > Solver.FallbackBatchThreshold)
+            {
+                flushJobs.AddUnsafely(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.RemoveConstraintsFromFallbackBatch });
+            }
             for (int i = 0; i < removalBatchJobCount; ++i)
             {
                 flushJobs.AddUnsafely(new NarrowPhaseFlushJob { Type = NarrowPhaseFlushJobType.RemoveConstraintFromTypeBatch, Index = i });
@@ -213,7 +229,7 @@ namespace BepuPhysics.CollisionDetection
             }
             //var end = Stopwatch.GetTimestamp();
             //Console.WriteLine($"Flush stage 3 time (us): {1e6 * (end - start) / Stopwatch.Frequency}");
-            flushJobs.Dispose(Pool.SpecializeFor<NarrowPhaseFlushJob>());
+            flushJobs.Dispose(Pool);
 
             PairCache.Postflush();
             ConstraintRemover.Postflush();
@@ -250,14 +266,14 @@ namespace BepuPhysics.CollisionDetection
         {
             public CollisionBatcher<CollisionCallbacks> Batcher;
             public PendingConstraintAddCache PendingConstraints;
-            public QuickList<int, Buffer<int>> PendingSetAwakenings;
+            public QuickList<int> PendingSetAwakenings;
 
             public OverlapWorker(int workerIndex, BufferPool pool, NarrowPhase<TCallbacks> narrowPhase)
             {
                 Batcher = new CollisionBatcher<CollisionCallbacks>(pool, narrowPhase.Shapes, narrowPhase.CollisionTaskRegistry, narrowPhase.timestepDuration,
                     new CollisionCallbacks(workerIndex, pool, narrowPhase));
                 PendingConstraints = new PendingConstraintAddCache(pool);
-                QuickList<int, Buffer<int>>.Create(pool.SpecializeFor<int>(), 16, out PendingSetAwakenings);
+                PendingSetAwakenings = new QuickList<int>(16, pool);
             }
         }
 
@@ -312,7 +328,7 @@ namespace BepuPhysics.CollisionDetection
         {
             Callbacks.Dispose();
         }
-
+        
         public unsafe void HandleOverlap(int workerIndex, CollidableReference a, CollidableReference b)
         {
             Debug.Assert(a.Packed != b.Packed, "Excuse me, broad phase, but an object cannot collide with itself!");
@@ -401,8 +417,8 @@ namespace BepuPhysics.CollisionDetection
                 //This pair uses no CCD beyond its speculative margin.
                 var continuation = overlapWorker.Batcher.Callbacks.AddDiscrete(ref pair);
                 overlapWorker.Batcher.Add(
-                    aCollidable.Shape, bCollidable.Shape, 
-                    poseB.Position - poseA.Position, poseA.Orientation, poseB.Orientation, velocityA, velocityB, 
+                    aCollidable.Shape, bCollidable.Shape,
+                    poseB.Position - poseA.Position, poseA.Orientation, poseB.Orientation, velocityA, velocityB,
                     speculativeMargin, speculativeMargin, new PairContinuation((int)continuation.Packed));
             }
             ////Pull the velocity information for all involved bodies. We will request a number of steps that will cover the motion path.

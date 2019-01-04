@@ -29,8 +29,7 @@ namespace Demos.Demos
             camera.Position = new Vector3(0, 10, 40);
             camera.Yaw = 0;
             camera.Pitch = 0;
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks());
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
             var box = new Box(2f, 2f, 2f);
             var capsule = new Capsule(1f, 1f);
@@ -147,7 +146,7 @@ namespace Demos.Demos
                 {
                     var stepProgression = i * inverse;
                     var stepT = stepProgression * t;
-                    PoseIntegrator.Integrate(pose, velocity, stepT, out var stepPose);
+                    PoseIntegration.Integrate(pose, velocity, stepT, out var stepPose);
                     var stepColor = color * (0.2f + 0.8f * stepProgression);
                     DrawShape(ref shape, ref stepPose, stepColor, Simulation.Shapes, renderer);
                 }
@@ -171,6 +170,8 @@ namespace Demos.Demos
             var filter = new Filter();
 
             var task = Simulation.NarrowPhase.SweepTaskRegistry.GetTask(a.TypeId, b.TypeId);
+            if (task == null)
+                return;
             var intersected = task.Sweep(
                 Unsafe.AsPointer(ref a), a.TypeId, poseA.Orientation, velocityA,
                 Unsafe.AsPointer(ref b), b.TypeId, poseB.Position - poseA.Position, poseB.Orientation, velocityB,
@@ -193,9 +194,9 @@ namespace Demos.Demos
             }
         }
 
-        public override void Update(Input input, float dt)
+        public override void Update(Window window, Camera camera, Input input, float dt)
         {
-            base.Update(input, dt);
+            base.Update(window, camera, input, dt);
 
             if (!input.WasDown(OpenTK.Input.Key.P))
                 animationT = (animationT + 1 / 60f) % (128);
@@ -252,21 +253,22 @@ namespace Demos.Demos
         {
             TestSweep(
                 a,
-                new RigidPose { Position = new Vector3(-10, 0, 0) + position, Orientation = initialOrientationA }, //new Quaternion(-0.1193455f, 0.4646222f, 0.4780905f, 0.7357392f) },
+                new RigidPose { Position = new Vector3(-10, 0, 0) + position, Orientation = initialOrientationA },
                 new BodyVelocity { Linear = new Vector3(1, -1, 0), Angular = new Vector3(1, 0, 1) },
                 b,
                 new RigidPose { Position = new Vector3(10, 0, 0) + position, Orientation = initialOrientationB },
-                new BodyVelocity { Linear = new Vector3(-1, -1, 0), Angular = new Vector3(0, 1, 0) }, 50f, renderer);
+                new BodyVelocity { Linear = new Vector3(-1, -1, 0), Angular = new Vector3(0, 1, 0) },
+                50f, renderer);
             position.Y -= 5;
         }
-        public override void Render(Renderer renderer, TextBuilder text, Font font)
+        public override void Render(Renderer renderer, Camera camera, Input input, TextBuilder text, Font font)
         {
             var xRotation = Quaternion.CreateFromAxisAngle(new Vector3(1, 0, 0), 0.02f * animationT * MathHelper.Pi);
             var yRotation = Quaternion.CreateFromAxisAngle(new Vector3(0, 1, 0), 0.04f * animationT * MathHelper.Pi);
             var zRotation = Quaternion.CreateFromAxisAngle(new Vector3(0, 0, 1), 0.06f * animationT * MathHelper.Pi);
             var worldA = Quaternion.Concatenate(xRotation, Quaternion.Concatenate(yRotation, zRotation));
             var worldB = Quaternion.Concatenate(yRotation, Quaternion.Concatenate(zRotation, xRotation));
-            base.Render(renderer, text, font);
+            base.Render(renderer, camera, input, text, font);
 
             var compoundBuilder = new CompoundBuilder(BufferPool, Simulation.Shapes, 8);
             compoundBuilder.Add(new Box(1f, 0.5f, 0.75f), new RigidPose { Orientation = Quaternion.Identity, Position = new Vector3(-0.5f, 0, 0) }, 1);
@@ -290,45 +292,55 @@ namespace Demos.Demos
             triangle.A -= triangleCenter;
             triangle.B -= triangleCenter;
             triangle.C -= triangleCenter;
-            var position = new Vector3(-75, 60, -75);
+            var position = new Vector3(-90, 60, -75);
             StandardTestSweep(new Sphere(0.5f), new Sphere(.25f), ref position, worldA, worldB, renderer);
             StandardTestSweep(new Sphere(0.5f), new Capsule(.25f, 1f), ref position, worldA, worldB, renderer);
+            StandardTestSweep(new Sphere(0.5f), new Cylinder(.25f, 1f), ref position, worldA, worldB, renderer);
             StandardTestSweep(new Sphere(0.5f), new Box(.5f, 1f, 1.5f), ref position, worldA, worldB, renderer);
             StandardTestSweep(new Sphere(0.5f), triangle, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Sphere(0.5f), compound, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Sphere(0.5f), bigCompound, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Sphere(0.5f), mesh, ref position, worldA, worldB, renderer);
 
-            position = new Vector3(-45, 60, -75);
+            position = new Vector3(-60, 60, -75);
             StandardTestSweep(new Capsule(0.5f, 0.5f), new Capsule(.25f, 1.5f), ref position, worldA, worldB, renderer);
+            StandardTestSweep(new Capsule(0.5f, 0.5f), new Cylinder(.25f, 1.5f), ref position, worldA, worldB, renderer);
             StandardTestSweep(new Capsule(0.5f, 1), new Box(.5f, 1f, 1.5f), ref position, worldA, worldB, renderer);
             StandardTestSweep(new Capsule(0.5f, 1), triangle, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Capsule(0.5f, 1), compound, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Capsule(0.5f, 1), bigCompound, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Capsule(0.5f, 1), mesh, ref position, worldA, worldB, renderer);
 
-            position = new Vector3(-15, 60, -75);
+            position = new Vector3(-30, 60, -75);
+            StandardTestSweep(new Cylinder(0.5f, 0.5f), new Cylinder(.25f, 1.5f), ref position, worldA, worldB, renderer);
+            StandardTestSweep(new Cylinder(0.5f, 1), new Box(.5f, 1f, 1.5f), ref position, worldA, worldB, renderer);
+            StandardTestSweep(new Cylinder(0.5f, 1), triangle, ref position, worldA, worldB, renderer);
+            StandardTestSweep(new Cylinder(0.5f, 1), compound, ref position, worldA, worldB, renderer);
+            StandardTestSweep(new Cylinder(0.5f, 1), bigCompound, ref position, worldA, worldB, renderer);
+            StandardTestSweep(new Cylinder(0.5f, 1), mesh, ref position, worldA, worldB, renderer);
+
+            position = new Vector3(0, 60, -75);
             StandardTestSweep(new Box(0.5f, 0.5f, 0.5f), new Box(.5f, 1f, 1.5f), ref position, worldA, worldB, renderer);
             StandardTestSweep(new Box(0.5f, 0.5f, 0.5f), triangle, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Box(0.5f, 0.5f, 0.5f), compound, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Box(0.5f, 0.5f, 0.5f), bigCompound, ref position, worldA, worldB, renderer);
             StandardTestSweep(new Box(0.5f, 0.5f, 0.5f), mesh, ref position, worldA, worldB, renderer);
 
-            position = new Vector3(15, 60, -75);
+            position = new Vector3(30, 60, -75);
             StandardTestSweep(triangle, triangle, ref position, worldA, worldB, renderer);
             StandardTestSweep(triangle, compound, ref position, worldA, worldB, renderer);
             StandardTestSweep(triangle, bigCompound, ref position, worldA, worldB, renderer);
             StandardTestSweep(triangle, mesh, ref position, worldA, worldB, renderer);
 
-            position = new Vector3(45, 60, -75);
+            position = new Vector3(60, 60, -75);
             StandardTestSweep(compound, compound, ref position, worldA, worldB, renderer);
             StandardTestSweep(compound, bigCompound, ref position, worldA, worldB, renderer);
             StandardTestSweep(compound, mesh, ref position, worldA, worldB, renderer);
 
-            position = new Vector3(75, 60, -75);
+            position = new Vector3(90, 60, -75);
             StandardTestSweep(bigCompound, bigCompound, ref position, worldA, worldB, renderer);
             StandardTestSweep(bigCompound, mesh, ref position, worldA, worldB, renderer);
-            
+
 
             //Get rid of the compound children registries so that we don't spam allocations.
             for (int i = 0; i < compound.Children.Length; ++i)

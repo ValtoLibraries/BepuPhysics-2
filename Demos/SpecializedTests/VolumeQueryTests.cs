@@ -72,7 +72,7 @@ namespace Demos.SpecializedTests
             camera.Position = new Vector3(-20f, 13, -20f);
             camera.Yaw = MathHelper.Pi * 3f / 4;
             camera.Pitch = MathHelper.Pi * 0.1f;
-            Simulation = Simulation.Create(BufferPool, new NoCollisionCallbacks());
+            Simulation = Simulation.Create(BufferPool, new NoCollisionCallbacks(), new DemoPoseIntegratorCallbacks());
 
             var sphere = new Sphere(0.5f);
             var shapeIndex = Simulation.Shapes.Add(sphere);
@@ -147,7 +147,7 @@ namespace Demos.SpecializedTests
             int boxCount = 16384;
             var randomMin = new Vector3(width, height, length) * spacing * -0.5f;
             var randomSpan = randomMin * -2;
-            QuickList<BoundingBox, Buffer<BoundingBox>>.Create(BufferPool.SpecializeFor<BoundingBox>(), boxCount, out queryBoxes);
+            queryBoxes = new QuickList<BoundingBox>(boxCount, BufferPool);
             for (int i = 0; i < boxCount; ++i)
             {
                 ref var box = ref queryBoxes.AllocateUnsafely();
@@ -158,14 +158,14 @@ namespace Demos.SpecializedTests
                 box.Max = boxOrigin + boxHalfSize;
             }
 
-            QuickList<BoxQueryAlgorithm, Array<BoxQueryAlgorithm>>.Create(new PassthroughArrayPool<BoxQueryAlgorithm>(), 2, out algorithms);
-            algorithms.Add(new BoxQueryAlgorithm("1", Worker1), new PassthroughArrayPool<BoxQueryAlgorithm>());
+            algorithms = new BoxQueryAlgorithm[1];
+            algorithms[0] = new BoxQueryAlgorithm("1", BufferPool, Worker1);
 
             BufferPool.Take(Environment.ProcessorCount * 2, out jobs);
         }
 
 
-        QuickList<BoundingBox, Buffer<BoundingBox>> queryBoxes;
+        QuickList<BoundingBox> queryBoxes;
 
                 
         class BoxQueryAlgorithm
@@ -178,10 +178,10 @@ namespace Demos.SpecializedTests
             Action<int> internalWorker;
             public int JobIndex;
 
-            public BoxQueryAlgorithm(string name, Func<int, BoxQueryAlgorithm, int> worker, int timingSampleCount = 16)
+            public BoxQueryAlgorithm(string name, BufferPool pool, Func<int, BoxQueryAlgorithm, int> worker, int timingSampleCount = 16)
             {
                 Name = name;
-                Timings = new TimingsRingBuffer(timingSampleCount);
+                Timings = new TimingsRingBuffer(timingSampleCount, pool);
                 this.worker = worker;
                 internalWorker = ExecuteWorker;
             }
@@ -192,7 +192,7 @@ namespace Demos.SpecializedTests
                 Interlocked.Add(ref IntersectionCount, intersectionCount);
             }
 
-            public void Execute(ref QuickList<BoundingBox, Buffer<BoundingBox>> boxes, SimpleThreadDispatcher dispatcher)
+            public void Execute(ref QuickList<BoundingBox> boxes, SimpleThreadDispatcher dispatcher)
             {
                 CacheBlaster.Blast();
                 JobIndex = -1;
@@ -229,9 +229,9 @@ namespace Demos.SpecializedTests
             }
             return intersectionCount;
         }
-        
 
-        QuickList<BoxQueryAlgorithm, Array<BoxQueryAlgorithm>> algorithms;
+
+        BoxQueryAlgorithm[] algorithms;
 
         struct QueryJob
         {
@@ -252,16 +252,12 @@ namespace Demos.SpecializedTests
                 return true;
             }
         }
-
-
-        const int sampleCount = 32;
-        TimingsRingBuffer recursiveQueryTimes = new TimingsRingBuffer(sampleCount);
-        TimingsRingBuffer directQueryTimes = new TimingsRingBuffer(sampleCount);
+                
         bool shouldUseMultithreading = true;
 
-        public unsafe override void Update(Input input, float dt)
+        public unsafe override void Update(Window window, Camera camera, Input input, float dt)
         {
-            base.Update(input, dt);
+            base.Update(window, camera, input, dt);
                         
             if (input.WasPushed(OpenTK.Input.Key.T))
             {
@@ -280,11 +276,11 @@ namespace Demos.SpecializedTests
             }
 
 
-            for (int i = 0; i < algorithms.Count; ++i)
+            for (int i = 0; i < algorithms.Length; ++i)
             {
                 algorithms[i].Execute(ref queryBoxes, shouldUseMultithreading ? ThreadDispatcher : null);
             }
-            for (int i = 1; i < algorithms.Count; ++i)
+            for (int i = 1; i < algorithms.Length; ++i)
             {
                 Debug.Assert(algorithms[i].IntersectionCount == algorithms[0].IntersectionCount);
             }
@@ -316,7 +312,7 @@ namespace Demos.SpecializedTests
                 new Vector2(32, y), 16, new Vector3(1), font);
         }
 
-        public override void Render(Renderer renderer, TextBuilder text, Font font)
+        public override void Render(Renderer renderer, Camera camera, Input input, TextBuilder text, Font font)
         {
             text.Clear().Append("Multithreading: ").Append(shouldUseMultithreading ? "On" : "Off");
             renderer.TextBatcher.Write(text, new Vector2(32, renderer.Surface.Resolution.Y - 128), 16, new Vector3(1), font);
@@ -330,13 +326,13 @@ namespace Demos.SpecializedTests
 
             var baseStats = algorithms[0].Timings.ComputeStats();
             var baseHeight = 48;
-            for (int i = 0; i < algorithms.Count; ++i)
+            for (int i = 0; i < algorithms.Length; ++i)
             {
                 var stats = algorithms[i].Timings.ComputeStats();
                 WriteResults(algorithms[i].Name, stats.Average, baseStats.Average, renderer.Surface.Resolution.Y - (baseHeight - 16 * i), renderer.TextBatcher, text, font);
             }
 
-            base.Render(renderer, text, font);
+            base.Render(renderer, camera, input, text, font);
         }
 
     }

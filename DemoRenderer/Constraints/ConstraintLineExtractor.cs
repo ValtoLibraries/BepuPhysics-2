@@ -17,20 +17,21 @@ namespace DemoRenderer.Constraints
     {
         int LinesPerConstraint { get; }
 
-        void ExtractLines(ref TPrestep prestepBundle, int innerIndex, int setIndex, int* bodyLocations, Bodies bodies, ref Vector3 tint, ref QuickList<LineInstance, Array<LineInstance>> lines);
+        void ExtractLines(ref TPrestep prestepBundle, int setIndex, int* bodyLocations, Bodies bodies, ref Vector3 tint, ref QuickList<LineInstance> lines);
     }
     abstract class TypeLineExtractor
     {
         public abstract int LinesPerConstraint { get; }
-        public abstract void ExtractLines(Bodies bodies, int setIndex, ref TypeBatch typeBatch, int constraintStart, int constraintCount, ref QuickList<LineInstance, Array<LineInstance>> lines);
+        public abstract void ExtractLines(Bodies bodies, int setIndex, ref TypeBatch typeBatch, int constraintStart, int constraintCount, ref QuickList<LineInstance> lines);
     }
 
     class TypeLineExtractor<T, TBodyReferences, TPrestep, TProjection, TAccumulatedImpulses> : TypeLineExtractor
+        where TPrestep : struct
         where T : struct, IConstraintLineExtractor<TPrestep>
     {
         public override int LinesPerConstraint => default(T).LinesPerConstraint;
         public unsafe override void ExtractLines(Bodies bodies, int setIndex, ref TypeBatch typeBatch, int constraintStart, int constraintCount,
-            ref QuickList<LineInstance, Array<LineInstance>> lines)
+            ref QuickList<LineInstance> lines)
         {
             ref var prestepStart = ref Buffer<TPrestep>.Get(ref typeBatch.PrestepData, 0);
             ref var referencesStart = ref Buffer<TBodyReferences>.Get(ref typeBatch.BodyReferences, 0);
@@ -56,7 +57,7 @@ namespace DemoRenderer.Constraints
                         //Active set constraint body references refer directly to the body index.
                         bodyIndices[j] = GatherScatter.Get(ref Unsafe.Add(ref firstReference, j), innerIndex);
                     }
-                    extractor.ExtractLines(ref prestepBundle, innerIndex, setIndex, bodyIndices, bodies, ref tint, ref lines);
+                    extractor.ExtractLines(ref GatherScatter.GetOffsetInstance(ref prestepBundle, innerIndex), setIndex, bodyIndices, bodies, ref tint, ref lines);
                 }
             }
             else
@@ -75,17 +76,18 @@ namespace DemoRenderer.Constraints
                         Debug.Assert(bodies.HandleToLocation[bodyHandle].SetIndex == setIndex);
                         bodyIndices[j] = bodies.HandleToLocation[bodyHandle].Index;
                     }
-                    extractor.ExtractLines(ref prestepBundle, innerIndex, setIndex, bodyIndices, bodies, ref tint, ref lines);
+                    extractor.ExtractLines(ref GatherScatter.GetOffsetInstance(ref prestepBundle, innerIndex), setIndex, bodyIndices, bodies, ref tint, ref lines);
                 }
             }
         }
     }
 
-    internal class ConstraintLineExtractor
+    internal class ConstraintLineExtractor : IDisposable
     {
         TypeLineExtractor[] lineExtractors;
         const int jobsPerThread = 4;
-        QuickList<ThreadJob, Array<ThreadJob>> jobs;
+        QuickList<ThreadJob> jobs;
+        BufferPool pool;
 
         struct ThreadJob
         {
@@ -96,7 +98,7 @@ namespace DemoRenderer.Constraints
             public int ConstraintCount;
             public int LineStart;
             public int LinesPerConstraint;
-            public QuickList<LineInstance, Array<LineInstance>> jobLines;
+            public QuickList<LineInstance> jobLines;
         }
 
         public bool Enabled { get; set; } = true;
@@ -109,11 +111,22 @@ namespace DemoRenderer.Constraints
                 Array.Resize(ref lineExtractors, typeId + 1);
             return ref lineExtractors[typeId];
         }
-        public ConstraintLineExtractor()
+        public ConstraintLineExtractor(BufferPool pool)
         {
+            this.pool = pool;
             lineExtractors = new TypeLineExtractor[32];
-            AllocateSlot(BallSocketTypeProcessor.BatchTypeId) =
-                new TypeLineExtractor<BallSocketLineExtractor, TwoBodyReferences, BallSocketPrestepData, BallSocketProjection, Vector3Wide>();
+            AllocateSlot(BallSocketTypeProcessor.BatchTypeId) = new TypeLineExtractor<BallSocketLineExtractor, TwoBodyReferences, BallSocketPrestepData, BallSocketProjection, Vector3Wide>();
+            AllocateSlot(WeldTypeProcessor.BatchTypeId) = new TypeLineExtractor<WeldLineExtractor, TwoBodyReferences, WeldPrestepData, WeldProjection, WeldAccumulatedImpulses>();
+            AllocateSlot(DistanceServoTypeProcessor.BatchTypeId) = new TypeLineExtractor<DistanceServoLineExtractor, TwoBodyReferences, DistanceServoPrestepData, DistanceServoProjection, Vector<float>>();
+            AllocateSlot(DistanceLimitTypeProcessor.BatchTypeId) = new TypeLineExtractor<DistanceLimitLineExtractor, TwoBodyReferences, DistanceLimitPrestepData, DistanceLimitProjection, Vector<float>>();
+            AllocateSlot(CenterDistanceTypeProcessor.BatchTypeId) = new TypeLineExtractor<CenterDistanceLineExtractor, TwoBodyReferences, CenterDistancePrestepData, CenterDistanceProjection, Vector<float>>();
+            AllocateSlot(PointOnLineServoTypeProcessor.BatchTypeId) = new TypeLineExtractor<PointOnLineLineExtractor, TwoBodyReferences, PointOnLineServoPrestepData, PointOnLineServoProjection, Vector2Wide>();
+            AllocateSlot(LinearAxisServoTypeProcessor.BatchTypeId) = new TypeLineExtractor<LinearAxisServoLineExtractor, TwoBodyReferences, LinearAxisServoPrestepData, LinearAxisServoProjection, Vector<float>>();
+            AllocateSlot(AngularSwivelHingeTypeProcessor.BatchTypeId) = new TypeLineExtractor<AngularSwivelHingeLineExtractor, TwoBodyReferences, AngularSwivelHingePrestepData, AngularSwivelHingeProjection, Vector<float>>();
+            AllocateSlot(SwivelHingeTypeProcessor.BatchTypeId) = new TypeLineExtractor<SwivelHingeLineExtractor, TwoBodyReferences, SwivelHingePrestepData, SwivelHingeProjection, Vector4Wide>();
+            AllocateSlot(HingeTypeProcessor.BatchTypeId) = new TypeLineExtractor<HingeLineExtractor, TwoBodyReferences, HingePrestepData, HingeProjection, HingeAccumulatedImpulses>();
+            AllocateSlot(OneBodyLinearServoTypeProcessor.BatchTypeId) = new TypeLineExtractor<OneBodyLinearServoLineExtractor, Vector<int>, OneBodyLinearServoPrestepData, OneBodyLinearServoProjection, Vector<float>>();
+
             AllocateSlot(Contact1OneBodyTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact1OneBodyLineExtractor, Vector<int>, Contact1OneBodyPrestepData, Contact1OneBodyProjection, Contact1AccumulatedImpulses>();
             AllocateSlot(Contact2OneBodyTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact2OneBodyLineExtractor, Vector<int>, Contact2OneBodyPrestepData, Contact2OneBodyProjection, Contact2AccumulatedImpulses>();
             AllocateSlot(Contact3OneBodyTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact3OneBodyLineExtractor, Vector<int>, Contact3OneBodyPrestepData, Contact3OneBodyProjection, Contact3AccumulatedImpulses>();
@@ -131,7 +144,7 @@ namespace DemoRenderer.Constraints
             AllocateSlot(Contact6NonconvexOneBodyTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact6NonconvexOneBodyLineExtractor, Vector<int>, Contact6NonconvexOneBodyPrestepData, Contact6NonconvexOneBodyProjection, Contact6NonconvexAccumulatedImpulses>();
             AllocateSlot(Contact7NonconvexOneBodyTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact7NonconvexOneBodyLineExtractor, Vector<int>, Contact7NonconvexOneBodyPrestepData, Contact7NonconvexOneBodyProjection, Contact7NonconvexAccumulatedImpulses>();
             AllocateSlot(Contact8NonconvexOneBodyTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact8NonconvexOneBodyLineExtractor, Vector<int>, Contact8NonconvexOneBodyPrestepData, Contact8NonconvexOneBodyProjection, Contact8NonconvexAccumulatedImpulses>();
-            
+
             AllocateSlot(Contact2NonconvexTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact2NonconvexLineExtractor, TwoBodyReferences, Contact2NonconvexPrestepData, Contact2NonconvexProjection, Contact2NonconvexAccumulatedImpulses>();
             AllocateSlot(Contact3NonconvexTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact3NonconvexLineExtractor, TwoBodyReferences, Contact3NonconvexPrestepData, Contact3NonconvexProjection, Contact3NonconvexAccumulatedImpulses>();
             AllocateSlot(Contact4NonconvexTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact4NonconvexLineExtractor, TwoBodyReferences, Contact4NonconvexPrestepData, Contact4NonconvexProjection, Contact4NonconvexAccumulatedImpulses>();
@@ -140,7 +153,7 @@ namespace DemoRenderer.Constraints
             AllocateSlot(Contact7NonconvexTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact7NonconvexLineExtractor, TwoBodyReferences, Contact7NonconvexPrestepData, Contact7NonconvexProjection, Contact7NonconvexAccumulatedImpulses>();
             AllocateSlot(Contact8NonconvexTypeProcessor.BatchTypeId) = new TypeLineExtractor<Contact8NonconvexLineExtractor, TwoBodyReferences, Contact8NonconvexPrestepData, Contact8NonconvexProjection, Contact8NonconvexAccumulatedImpulses>();
 
-            QuickList<ThreadJob, Array<ThreadJob>>.Create(new PassthroughArrayPool<ThreadJob>(), Environment.ProcessorCount * (jobsPerThread + 1), out jobs);
+            jobs = new QuickList<ThreadJob>(Environment.ProcessorCount * (jobsPerThread + 1), pool);
 
             executeJobDelegate = ExecuteJob;
         }
@@ -156,11 +169,10 @@ namespace DemoRenderer.Constraints
         }
 
 
-        internal void AddInstances(Bodies bodies, Solver solver, bool showConstraints, bool showContacts, ref QuickList<LineInstance, Array<LineInstance>> lines, ParallelLooper looper)
+        internal void AddInstances(Bodies bodies, Solver solver, bool showConstraints, bool showContacts, ref QuickList<LineInstance> lines, ParallelLooper looper)
         {
             int neededLineCapacity = lines.Count;
             jobs.Count = 0;
-            var jobPool = new PassthroughArrayPool<ThreadJob>();
             for (int setIndex = 0; setIndex < solver.Sets.Length; ++setIndex)
             {
                 ref var set = ref solver.Sets[setIndex];
@@ -172,8 +184,10 @@ namespace DemoRenderer.Constraints
                         for (int typeBatchIndex = 0; typeBatchIndex < batch.TypeBatches.Count; ++typeBatchIndex)
                         {
                             ref var typeBatch = ref batch.TypeBatches[typeBatchIndex];
+                            if (typeBatch.TypeId >= lineExtractors.Length)
+                                continue; //No registered extractor for this type, clearly.
                             var extractor = lineExtractors[typeBatch.TypeId];
-                            var isContactBatch = PairCache.IsContactBatch(typeBatch.TypeId);
+                            var isContactBatch = NarrowPhase.IsContactConstraintType(typeBatch.TypeId);
                             if (extractor != null && ((isContactBatch && showContacts) || (!isContactBatch && showConstraints)))
                             {
                                 jobs.Add(new ThreadJob
@@ -185,7 +199,7 @@ namespace DemoRenderer.Constraints
                                     ConstraintCount = typeBatch.ConstraintCount,
                                     LineStart = neededLineCapacity,
                                     LinesPerConstraint = extractor.LinesPerConstraint
-                                }, jobPool);
+                                }, pool);
                                 neededLineCapacity += extractor.LinesPerConstraint * typeBatch.ConstraintCount;
                             }
                         }
@@ -217,17 +231,17 @@ namespace DemoRenderer.Constraints
                         newJob.ConstraintCount = constraintsPerSubjob;
                         if (remainder > j)
                             ++newJob.ConstraintCount;
-                        jobs.Add(newJob, jobPool);
+                        jobs.Add(newJob, pool);
                         previousJob = newJob;
                     }
                 }
             }
-            lines.EnsureCapacity(neededLineCapacity, new PassthroughArrayPool<LineInstance>());
+            lines.EnsureCapacity(neededLineCapacity, pool);
             lines.Count = neededLineCapacity; //Line additions will be performed on suballocated lists. This count will be used by the renderer when reading line data.
             for (int i = 0; i < jobs.Count; ++i)
             {
                 //Creating a local copy of the list reference and count allows additions to proceed in parallel. 
-                jobs[i].jobLines = new QuickList<LineInstance, Array<LineInstance>>(ref lines.Span);
+                jobs[i].jobLines = new QuickList<LineInstance>(lines.Span);
                 //By setting the count, we work around the fact that Array<T> doesn't support slicing.
                 jobs[i].jobLines.Count = jobs[i].LineStart;
             }
@@ -238,5 +252,9 @@ namespace DemoRenderer.Constraints
             this.solver = solver;
         }
 
+        public void Dispose()
+        {
+            jobs.Dispose(pool);
+        }
     }
 }

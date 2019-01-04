@@ -14,8 +14,8 @@ namespace Demos.Demos
 {
     public class FountainStressTestDemo : Demo
     {
-        QuickQueue<StaticDescription, Buffer<StaticDescription>> removedStatics;
-        QuickQueue<int, Buffer<int>> dynamicHandles;
+        QuickQueue<StaticDescription> removedStatics;
+        QuickQueue<int> dynamicHandles;
         Random random;
         public unsafe override void Initialize(ContentArchive content, Camera camera)
         {
@@ -23,7 +23,7 @@ namespace Demos.Demos
             camera.Yaw = MathHelper.Pi * 3f / 4;
             camera.Pitch = MathHelper.Pi * 0.1f;
             //Using minimum sized allocations forces as many resizes as possible.
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks(),
+            Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)), initialAllocationSizes:
             new SimulationAllocationSizes
             {
                 Bodies = 1,
@@ -34,8 +34,7 @@ namespace Demos.Demos
                 ShapesPerType = 1,
                 Statics = 1
             });
-
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            
             Simulation.Deterministic = false;
 
             const int planeWidth = 8;
@@ -105,8 +104,8 @@ namespace Demos.Demos
                 kinematicHandles[i] = Simulation.Bodies.Add(description);
             }
 
-            QuickQueue<int, Buffer<int>>.Create(BufferPool.SpecializeFor<int>(), 65536, out dynamicHandles);
-            QuickQueue<StaticDescription, Buffer<StaticDescription>>.Create(BufferPool.SpecializeFor<StaticDescription>(), 512, out removedStatics);
+            dynamicHandles = new QuickQueue<int>(65536, BufferPool);
+            removedStatics = new QuickQueue<StaticDescription>(512, BufferPool);
             random = new Random(5);
         }
 
@@ -161,7 +160,7 @@ namespace Demos.Demos
             }
         }
 
-        public override void Update(Input input, float dt)
+        public override void Update(Window window, Camera camera, Input input, float dt)
         {
             var timestepDuration = 1f / 60f;
             time += timestepDuration;
@@ -223,7 +222,7 @@ namespace Demos.Demos
                 var indexToRemove = random.Next(Simulation.Statics.Count);
                 Simulation.Statics.GetDescription(Simulation.Statics.IndexToHandle[indexToRemove], out var staticDescription);
                 Simulation.Statics.RemoveAt(indexToRemove);
-                removedStatics.Enqueue(ref staticDescription, BufferPool.SpecializeFor<StaticDescription>());
+                removedStatics.Enqueue(staticDescription, BufferPool);
             }
 
 
@@ -291,7 +290,7 @@ namespace Demos.Demos
                 };
 
 
-                dynamicHandles.Enqueue(Simulation.Bodies.Add(description), BufferPool.SpecializeFor<int>());
+                dynamicHandles.Enqueue(Simulation.Bodies.Add(description), BufferPool);
 
             }
             int targetAsymptote = 65536;
@@ -311,7 +310,7 @@ namespace Demos.Demos
                     break;
                 }
             }
-            base.Update(input, dt);
+            base.Update(window, camera, input, dt);
 
             if (input.WasPushed(OpenTK.Input.Key.P))
                 GC.Collect(int.MaxValue, GCCollectionMode.Forced, true, true);

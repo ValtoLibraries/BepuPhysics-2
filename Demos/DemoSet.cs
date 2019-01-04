@@ -39,16 +39,26 @@ namespace Demos
 
         public DemoSet()
         {
+            AddOption<NelderMeadTestDemo>();
+            AddOption<CylinderTestDemo>();
             AddOption<PyramidDemo>();
+            AddOption<ColosseumDemo>();
             AddOption<RagdollDemo>();
             AddOption<CompoundTestDemo>();
             AddOption<MeshDemo>();
-            AddOption<ClothLatticeDemo>();
+            AddOption<ClothDemo>();
+            AddOption<NewtDemo>();
+            AddOption<PlanetDemo>();
+            AddOption<RopeStabilityDemo>();
+            AddOption<SubsteppingDemo>();
             AddOption<BlockChainDemo>();
             AddOption<RayCastingDemo>();
             AddOption<SweepDemo>();
             AddOption<ShapePileDemo>();
+            AddOption<ContactEventsDemo>();
             AddOption<FountainStressTestDemo>();
+            AddOption<SolverBatchTestDemo>();
+            AddOption<ConstraintTestDemo>();
         }
 
         public int Count { get { return options.Count; } }

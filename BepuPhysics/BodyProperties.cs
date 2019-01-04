@@ -18,6 +18,8 @@ namespace BepuPhysics
         //There may be an argument for the matrix variant to ALSO be stored for some bandwidth-unconstrained stages, but don't worry about that until there's a reason to worry about it.
         public Quaternion Orientation;
 
+        public static RigidPose Identity { get; } = new RigidPose(new Vector3());
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public RigidPose(in Vector3 position, in Quaternion orientation)
         {
@@ -30,6 +32,7 @@ namespace BepuPhysics
             Position = position;
             Orientation = Quaternion.Identity;
         }
+
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Transform(in Vector3 v, in RigidPose pose, out Vector3 result)
@@ -50,6 +53,13 @@ namespace BepuPhysics
     {
         public Vector3 Linear;
         public Vector3 Angular;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public BodyVelocity(in Vector3 linear)
+        {
+            Linear = linear;
+            Angular = default;
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public BodyVelocity(in Vector3 linear, in Vector3 angular)
@@ -117,14 +127,6 @@ namespace BepuPhysics
         //We do not constrain write access by default, instead opting to leave it open for advanced users to mess around with.
         //TODO: If people misuse these, we should internalize them in a case by case basis.
 
-        //TODO: We may later decide to encode kinematic-ness in the indices held by constraints. That would be somewhat complicated, but if we end up using such an encoding
-        //to avoid velocity reads from/writes to kinematics in the solver, we might as well use it for the traversal too.
-        /// <summary>
-        /// True if this body has effectively infinite mass and inertia, false otherwise. Kinematic bodies may block constraint graph traversals since they cannot propagate impulses.
-        /// This value should remain in sync with other systems that make a distinction between kinematic and dynamic bodies. Under normal circumstances, it should never be externally set.
-        /// To change an object's kinematic/dynamic state, use Bodies.ChangeLocalInertia or Bodies.ApplyDescription.
-        /// </summary>
-        public bool Kinematic;
         /// <summary>
         /// If the body is awake, this is the number of time steps that the body has had a velocity below the sleep threshold.
         /// </summary>

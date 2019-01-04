@@ -31,11 +31,13 @@ namespace BepuPhysics.Constraints.Contact
     }
     public interface INonconvexTwoBodyContactPrestepWide<TPrestep> where TPrestep : struct, INonconvexTwoBodyContactPrestepWide<TPrestep>
     {
+        int ContactCount { get; }
         ref NonconvexTwoBodyContactPrestepCommon GetCommonProperties(ref TPrestep prestep);
         ref NonconvexPrestepData GetFirstContact(ref TPrestep prestep);
     }
     public interface INonconvexOneBodyContactPrestepWide<TPrestep> where TPrestep : struct, INonconvexOneBodyContactPrestepWide<TPrestep>
     {
+        int ContactCount { get; }
         ref NonconvexOneBodyContactPrestepCommon GetCommonProperties(ref TPrestep prestep);
         ref NonconvexPrestepData GetFirstContact(ref TPrestep prestep);
     }
@@ -179,24 +181,26 @@ namespace BepuPhysics.Constraints.Contact
     {
         public BodyInertias InertiaA;
         public Vector<float> FrictionCoefficient;
+        public Vector<float> SoftnessImpulseScale;
     }
     public struct NonconvexTwoBodyProjectionCommon
     {
         public BodyInertias InertiaA;
         public BodyInertias InertiaB;
         public Vector<float> FrictionCoefficient;
+        public Vector<float> SoftnessImpulseScale;
     }
     public struct ContactNonconvexOneBodyProjection
     {
         public Vector3Wide Normal;
         public TangentFrictionOneBody.Projection Tangent;
-        public PenetrationLimit1OneBody.Projection Penetration;
+        public PenetrationLimitOneBodyProjection Penetration;
     }
     public struct ContactNonconvexTwoBodyProjection
     {
         public Vector3Wide Normal;
         public TangentFriction.Projection Tangent;
-        public PenetrationLimit1.Projection Penetration;
+        public PenetrationLimitProjection Penetration;
     }
 
     public interface INonconvexOneBodyProjection<TProjection> where TProjection : INonconvexOneBodyProjection<TProjection>
@@ -215,14 +219,14 @@ namespace BepuPhysics.Constraints.Contact
     }
 
     public struct ContactNonconvexOneBodyFunctions<TPrestep, TProjection, TAccumulatedImpulses> :
-        IOneBodyConstraintFunctions<TPrestep, TProjection, TAccumulatedImpulses>
+        IOneBodyContactConstraintFunctions<TPrestep, TProjection, TAccumulatedImpulses>
         where TPrestep : struct, INonconvexOneBodyContactPrestepWide<TPrestep>
         where TProjection : struct, INonconvexOneBodyProjection<TProjection>
         where TAccumulatedImpulses : struct
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Prestep(Bodies bodies, ref Vector<int> bodyReferences, int count,
-            float dt, float inverseDt, ref TPrestep prestep, out TProjection projection)
+            float dt, float inverseDt, ref BodyInertias inertia, ref TPrestep prestep, out TProjection projection)
         {
             //TODO: This is another area where it's highly doubtful that the compiler will ever figure out that this initialization is unnecessary.
             //While we could jump through some nasty contortions now to resolve this, we'll instead opt for a little inefficient simplicity while waiting for generic pointer support
@@ -230,21 +234,22 @@ namespace BepuPhysics.Constraints.Contact
             projection = default;
             ref var prestepCommon = ref prestep.GetCommonProperties(ref prestep);
             ref var projectionCommon = ref projection.GetCommonProperties(ref projection);
-            bodies.GatherInertia(ref bodyReferences, count, out projectionCommon.InertiaA);
+            projectionCommon.InertiaA = inertia;
             projectionCommon.FrictionCoefficient = prestepCommon.FrictionCoefficient;
             ref var prestepContactStart = ref prestep.GetFirstContact(ref prestep);
             ref var projectionContactStart = ref projection.GetFirstContact(ref projection);
+            SpringSettingsWide.ComputeSpringiness(prestepCommon.SpringSettings, dt, out var positionErrorToVelocity, out var effectiveMassCFMScale, out projectionCommon.SoftnessImpulseScale);
             for (int i = 0; i < projection.ContactCount; ++i)
             {
                 ref var prestepContact = ref Unsafe.Add(ref prestepContactStart, i);
                 ref var projectionContact = ref Unsafe.Add(ref projectionContactStart, i);
                 projectionContact.Normal = prestepContact.Normal;
-                Helpers.BuildOrthnormalBasis(ref prestepContact.Normal, out var x, out var z);
+                Helpers.BuildOrthnormalBasis(prestepContact.Normal, out var x, out var z);
                 TangentFrictionOneBody.Prestep(ref x, ref z, ref prestepContact.Offset, ref projectionCommon.InertiaA, out projectionContact.Tangent);
-                PenetrationLimit1OneBody.Prestep(ref projectionCommon.InertiaA,
-                    ref prestepContact.Offset, ref prestepContact.Normal, ref prestepContact.Depth, ref prestepCommon.SpringSettings, ref prestepCommon.MaximumRecoveryVelocity,
-                    dt, inverseDt, out projectionContact.Penetration);
-
+                PenetrationLimitOneBody.Prestep(projectionCommon.InertiaA,
+                    prestepContact.Offset, prestepContact.Normal, prestepContact.Depth,
+                    positionErrorToVelocity, effectiveMassCFMScale, prestepCommon.MaximumRecoveryVelocity, inverseDt,
+                    out projectionContact.Penetration);
             }
         }
 
@@ -260,9 +265,9 @@ namespace BepuPhysics.Constraints.Contact
             {
                 ref var contact = ref Unsafe.Add(ref contactStart, i);
                 ref var contactImpulse = ref Unsafe.Add(ref accumulatedImpulsesStart, i);
-                Helpers.BuildOrthnormalBasis(ref contact.Normal, out var x, out var z);
+                Helpers.BuildOrthnormalBasis(contact.Normal, out var x, out var z);
                 TangentFrictionOneBody.WarmStart(ref x, ref z, ref contact.Tangent, ref common.InertiaA, ref contactImpulse.Tangent, ref wsvA);
-                PenetrationLimit1OneBody.WarmStart(ref contact.Penetration, ref common.InertiaA, ref contact.Normal, ref contactImpulse.Penetration, ref wsvA);
+                PenetrationLimitOneBody.WarmStart(contact.Penetration, common.InertiaA, contact.Normal, contactImpulse.Penetration, ref wsvA);
             }
         }
 
@@ -278,25 +283,36 @@ namespace BepuPhysics.Constraints.Contact
             {
                 ref var contact = ref Unsafe.Add(ref contactStart, i);
                 ref var contactImpulse = ref Unsafe.Add(ref accumulatedImpulsesStart, i);
-                Helpers.BuildOrthnormalBasis(ref contact.Normal, out var x, out var z);
+                Helpers.BuildOrthnormalBasis(contact.Normal, out var x, out var z);
                 var maximumTangentImpulse = common.FrictionCoefficient * contactImpulse.Penetration;
                 TangentFrictionOneBody.Solve(ref x, ref z, ref contact.Tangent, ref common.InertiaA, ref maximumTangentImpulse, ref contactImpulse.Tangent, ref wsvA);
-                PenetrationLimit1OneBody.Solve(ref contact.Penetration, ref common.InertiaA, ref contact.Normal,
+                PenetrationLimitOneBody.Solve(contact.Penetration, common.InertiaA, contact.Normal, common.SoftnessImpulseScale,
                     ref contactImpulse.Penetration, ref wsvA);
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void IncrementallyUpdateContactData(in Vector<float> dt, in BodyVelocities velocity, ref TPrestep prestep)
+        {
+            ref var prestepCommon = ref prestep.GetCommonProperties(ref prestep);
+            ref var prestepContactStart = ref prestep.GetFirstContact(ref prestep);
+            for (int i = 0; i < prestep.ContactCount; ++i)
+            {
+                ref var prestepContact = ref Unsafe.Add(ref prestepContactStart, i);
+                PenetrationLimitOneBody.UpdatePenetrationDepth(dt, prestepContact.Offset, prestepContact.Normal, velocity, ref prestepContact.Depth);
+            }
+        }
     }
 
     public struct ContactNonconvexTwoBodyFunctions<TPrestep, TProjection, TAccumulatedImpulses> :
-        IConstraintFunctions<TPrestep, TProjection, TAccumulatedImpulses>
+        IContactConstraintFunctions<TPrestep, TProjection, TAccumulatedImpulses>
         where TPrestep : struct, INonconvexTwoBodyContactPrestepWide<TPrestep>
         where TProjection : struct, INonconvexTwoBodyProjection<TProjection>
         where TAccumulatedImpulses : struct
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Prestep(Bodies bodies, ref TwoBodyReferences bodyReferences, int count,
-            float dt, float inverseDt, ref TPrestep prestep, out TProjection projection)
+            float dt, float inverseDt, ref BodyInertias inertiaA, ref BodyInertias inertiaB, ref TPrestep prestep, out TProjection projection)
         {
             //TODO: This is another area where it's highly doubtful that the compiler will ever figure out that this initialization is unnecessary.
             //While we could jump through some nasty contortions now to resolve this, we'll instead opt for a little inefficient simplicity while waiting for generic pointer support
@@ -304,22 +320,24 @@ namespace BepuPhysics.Constraints.Contact
             projection = default;
             ref var prestepCommon = ref prestep.GetCommonProperties(ref prestep);
             ref var projectionCommon = ref projection.GetCommonProperties(ref projection);
-            bodies.GatherInertia(ref bodyReferences, count, out projectionCommon.InertiaA, out projectionCommon.InertiaB);
+            projectionCommon.InertiaA = inertiaA;
+            projectionCommon.InertiaB = inertiaB;
             projectionCommon.FrictionCoefficient = prestepCommon.FrictionCoefficient;
             ref var prestepContactStart = ref prestep.GetFirstContact(ref prestep);
             ref var projectionContactStart = ref projection.GetFirstContact(ref projection);
+            SpringSettingsWide.ComputeSpringiness(prestepCommon.SpringSettings, dt, out var positionErrorToVelocity, out var effectiveMassCFMScale, out projectionCommon.SoftnessImpulseScale);
             for (int i = 0; i < projection.ContactCount; ++i)
             {
                 ref var prestepContact = ref Unsafe.Add(ref prestepContactStart, i);
                 ref var projectionContact = ref Unsafe.Add(ref projectionContactStart, i);
                 projectionContact.Normal = prestepContact.Normal;
-                Helpers.BuildOrthnormalBasis(ref prestepContact.Normal, out var x, out var z);
+                Helpers.BuildOrthnormalBasis(prestepContact.Normal, out var x, out var z);
                 Vector3Wide.Subtract(prestepContact.Offset, prestepCommon.OffsetB, out var contactOffsetB);
                 TangentFriction.Prestep(ref x, ref z, ref prestepContact.Offset, ref contactOffsetB, ref projectionCommon.InertiaA, ref projectionCommon.InertiaB, out projectionContact.Tangent);
-                PenetrationLimit1.Prestep(ref projectionCommon.InertiaA, ref projectionCommon.InertiaB,
-                    ref prestepContact.Offset, ref contactOffsetB, ref prestepContact.Normal, ref prestepContact.Depth, ref prestepCommon.SpringSettings, ref prestepCommon.MaximumRecoveryVelocity,
-                    dt, inverseDt, out projectionContact.Penetration);
-
+                PenetrationLimit.Prestep(projectionCommon.InertiaA, projectionCommon.InertiaB,
+                    prestepContact.Offset, contactOffsetB, prestepContact.Normal, prestepContact.Depth, 
+                    positionErrorToVelocity, effectiveMassCFMScale, prestepCommon.MaximumRecoveryVelocity, inverseDt,
+                    out projectionContact.Penetration);
             }
         }
 
@@ -335,9 +353,9 @@ namespace BepuPhysics.Constraints.Contact
             {
                 ref var contact = ref Unsafe.Add(ref contactStart, i);
                 ref var contactImpulse = ref Unsafe.Add(ref accumulatedImpulsesStart, i);
-                Helpers.BuildOrthnormalBasis(ref contact.Normal, out var x, out var z);
+                Helpers.BuildOrthnormalBasis(contact.Normal, out var x, out var z);
                 TangentFriction.WarmStart(ref x, ref z, ref contact.Tangent, ref common.InertiaA, ref common.InertiaB, ref contactImpulse.Tangent, ref wsvA, ref wsvB);
-                PenetrationLimit1.WarmStart(ref contact.Penetration, ref common.InertiaA, ref common.InertiaB, ref contact.Normal, ref contactImpulse.Penetration, ref wsvA, ref wsvB);
+                PenetrationLimit.WarmStart(contact.Penetration, common.InertiaA, common.InertiaB, contact.Normal, contactImpulse.Penetration, ref wsvA, ref wsvB);
             }
         }
 
@@ -353,13 +371,23 @@ namespace BepuPhysics.Constraints.Contact
             {
                 ref var contact = ref Unsafe.Add(ref contactStart, i);
                 ref var contactImpulse = ref Unsafe.Add(ref accumulatedImpulsesStart, i);
-                Helpers.BuildOrthnormalBasis(ref contact.Normal, out var x, out var z);
+                Helpers.BuildOrthnormalBasis(contact.Normal, out var x, out var z);
                 var maximumTangentImpulse = common.FrictionCoefficient * contactImpulse.Penetration;
                 TangentFriction.Solve(ref x, ref z, ref contact.Tangent, ref common.InertiaA, ref common.InertiaB, ref maximumTangentImpulse, ref contactImpulse.Tangent, ref wsvA, ref wsvB);
-                PenetrationLimit1.Solve(ref contact.Penetration, ref common.InertiaA, ref common.InertiaB, ref contact.Normal,
-                    ref contactImpulse.Penetration, ref wsvA, ref wsvB);
+                PenetrationLimit.Solve(contact.Penetration, common.InertiaA, common.InertiaB, contact.Normal, common.SoftnessImpulseScale, ref contactImpulse.Penetration, ref wsvA, ref wsvB);
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void IncrementallyUpdateContactData(in Vector<float> dt, in BodyVelocities velocityA, in BodyVelocities velocityB, ref TPrestep prestep)
+        {
+            ref var prestepCommon = ref prestep.GetCommonProperties(ref prestep);
+            ref var prestepContactStart = ref prestep.GetFirstContact(ref prestep);
+            for (int i = 0; i < prestep.ContactCount; ++i)
+            {
+                ref var prestepContact = ref Unsafe.Add(ref prestepContactStart, i);
+                PenetrationLimit.UpdatePenetrationDepth(dt, prestepContact.Offset, prestepCommon.OffsetB, prestepContact.Normal, velocityA, velocityB, ref prestepContact.Depth);
+            }
+        }
     }
 }

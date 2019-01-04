@@ -86,9 +86,9 @@ namespace BepuUtilities
         }
 
         /// <summary>
-        /// Computes a * transpose(b), assuming a = b * M. This is conceptually the second half of Triangular3x3Wide.MatrixSandwich.
+        /// Computes a * transpose(b), assuming a = b * M for some symmetric matrix M. This is conceptually the second half of Triangular3x3Wide.MatrixSandwich.
         /// </summary>
-        /// <param name="a">First matrix to multiply. Must be of the form a = b * M.</param>
+        /// <param name="a">First matrix to multiply. Must be of the form a = b * M for some symmetric matrix M.</param>
         /// <param name="b">Matrix to be transaposed and multiplied with a..</param>
         /// <param name="result">Symmetric result of a * transpose(b), assuming a = b * M.</param>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

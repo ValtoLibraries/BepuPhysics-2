@@ -1,4 +1,5 @@
 ﻿using BepuUtilities;
+using BepuUtilities.Memory;
 using DemoContentLoader;
 using DemoRenderer;
 using DemoRenderer.UI;
@@ -6,6 +7,7 @@ using Demos.UI;
 using DemoUtilities;
 using System;
 using System.Numerics;
+using Quaternion = BepuUtilities.Quaternion;
 
 namespace Demos
 {
@@ -49,7 +51,7 @@ namespace Demos
             }
         }
 
-        SimulationTimeSamples timeSamples = new SimulationTimeSamples(512);
+        SimulationTimeSamples timeSamples;
 
         public DemoHarness(GameLoop loop, ContentArchive content,
             Controls? controls = null)
@@ -58,12 +60,13 @@ namespace Demos
             this.input = loop.Input;
             this.camera = loop.Camera;
             this.content = content;
+            timeSamples = new SimulationTimeSamples(512, loop.Pool);
             if (controls == null)
                 this.controls = Controls.Default;
-            
+
             var fontContent = content.Load<FontContent>(@"Content\Carlito-Regular.ttf");
             font = new Font(loop.Surface.Device, loop.Surface.Context, fontContent);
-            
+
             timingGraph = new Graph(new GraphDescription
             {
                 BodyLineColor = new Vector3(1, 1, 1),
@@ -152,6 +155,7 @@ namespace Demos
             Fast
         }
         CameraMoveSpeedState cameraSpeedState;
+        Int2? grabberCachedMousePosition;
 
         public void Update(float dt)
         {
@@ -224,13 +228,20 @@ namespace Demos
                 else
                     cameraOffset = new Vector3();
                 camera.Position += cameraOffset;
-                if (input.MouseLocked)
+
+                var grabRotationIsActive = controls.Grab.IsDown(input) && controls.GrabRotate.IsDown(input);
+
+                //Don't turn the camera while rotating a grabbed object.
+                if (!grabRotationIsActive)
                 {
-                    var delta = input.MouseDelta;
-                    if (delta.X != 0 || delta.Y != 0)
+                    if (input.MouseLocked)
                     {
-                        camera.Yaw += delta.X * controls.MouseSensitivity;
-                        camera.Pitch += delta.Y * controls.MouseSensitivity;
+                        var delta = input.MouseDelta;
+                        if (delta.X != 0 || delta.Y != 0)
+                        {
+                            camera.Yaw += delta.X * controls.MouseSensitivity;
+                            camera.Pitch += delta.Y * controls.MouseSensitivity;
+                        }
                     }
                 }
                 if (controls.LockMouse.WasTriggered(input))
@@ -238,7 +249,27 @@ namespace Demos
                     input.MouseLocked = !input.MouseLocked;
                 }
 
-                grabber.Update(demo.Simulation, camera, input.MouseLocked, controls.Grab.IsDown(input), GetNormalizedMousePosition());
+                Quaternion incrementalGrabRotation;
+                if (grabRotationIsActive)
+                {
+                    if (grabberCachedMousePosition == null)
+                        grabberCachedMousePosition = input.MousePosition;
+                    var delta = input.MouseDelta;
+                    var yaw = delta.X * controls.MouseSensitivity;
+                    var pitch = delta.Y * controls.MouseSensitivity;
+                    incrementalGrabRotation = Quaternion.Concatenate(Quaternion.CreateFromAxisAngle(camera.Right, pitch), Quaternion.CreateFromAxisAngle(camera.Up, yaw));
+                    if (!input.MouseLocked)
+                    {
+                        //Undo the mouse movement if we're in freemouse mode.
+                        input.MousePosition = grabberCachedMousePosition.Value;
+                    }
+                }
+                else
+                {
+                    incrementalGrabRotation = Quaternion.Identity;
+                    grabberCachedMousePosition = null;
+                }
+                grabber.Update(demo.Simulation, camera, input.MouseLocked, controls.Grab.IsDown(input), incrementalGrabRotation, window.GetNormalizedMousePosition(input.MousePosition));
 
 
 
@@ -275,16 +306,11 @@ namespace Demos
             ++frameCount;
             if (!controls.SlowTimesteps.IsDown(input) || frameCount % 20 == 0)
             {
-                demo.Update(input, dt);
+                demo.Update(window, camera, input, dt);
             }
             timeSamples.RecordFrame(demo.Simulation);
         }
-
-        private Vector2 GetNormalizedMousePosition()
-        {
-            return new Vector2((float)input.MousePosition.X / window.Resolution.X, (float)input.MousePosition.Y / window.Resolution.Y);
-        }
-
+        
         TextBuilder uiText = new TextBuilder(128);
         public void Render(Renderer renderer)
         {
@@ -293,7 +319,7 @@ namespace Demos
             renderer.Lines.ClearInstances();
 
             //Perform any demo-specific rendering first.
-            demo.Render(renderer, uiText, font);
+            demo.Render(renderer, camera, input, uiText, font);
 #if DEBUG
             float warningHeight = 15f;
             renderer.TextBatcher.Write(uiText.Clear().Append("Running in Debug configuration. Compile in Release or, better yet, ReleaseStrip configuration for performance testing."),
@@ -305,7 +331,7 @@ namespace Demos
             if (showControls)
             {
                 var penPosition = new Vector2(window.Resolution.X - textHeight * 6 - 25, window.Resolution.Y - 25);
-                penPosition.Y -= 18 * lineSpacing;
+                penPosition.Y -= 19 * lineSpacing;
                 uiText.Clear().Append("Controls: ");
                 var headerHeight = textHeight * 1.2f;
                 renderer.TextBatcher.Write(uiText, penPosition - new Vector2(0.5f * GlyphBatch.MeasureLength(uiText, font, headerHeight), 0), headerHeight, textColor, font);
@@ -328,6 +354,7 @@ namespace Demos
                 //Conveniently, enum strings are cached. Every (Key).ToString() returns the same reference for the same key, so no garbage worries.
                 WriteName(nameof(controls.LockMouse), controls.LockMouse.ToString());
                 WriteName(nameof(controls.Grab), controls.Grab.ToString());
+                WriteName(nameof(controls.GrabRotate), controls.GrabRotate.ToString());
                 WriteName(nameof(controls.MoveForward), controls.MoveForward.ToString());
                 WriteName(nameof(controls.MoveBackward), controls.MoveBackward.ToString());
                 WriteName(nameof(controls.MoveLeft), controls.MoveLeft.ToString());
@@ -368,7 +395,7 @@ namespace Demos
                     uiText.Clear().Append(1e3 * timeSamples.Simulation[timeSamples.Simulation.End - 1], timingGraph.Description.VerticalIntervalLabelRounding).Append(" ms/step"),
                     new Vector2(window.Resolution.X - inset - GlyphBatch.MeasureLength(uiText, font, timingTextSize), inset), timingTextSize, timingGraph.Description.TextColor, font);
             }
-            grabber.Draw(renderer.Lines, camera, input.MouseLocked, controls.Grab.IsDown(input), GetNormalizedMousePosition());
+            grabber.Draw(renderer.Lines, camera, input.MouseLocked, controls.Grab.IsDown(input), window.GetNormalizedMousePosition(input.MousePosition));
             renderer.Shapes.AddInstances(demo.Simulation, demo.ThreadDispatcher);
             renderer.Lines.Extract(demo.Simulation.Bodies, demo.Simulation.Solver, demo.Simulation.BroadPhase, showConstraints, showContacts, showBoundingBoxes, demo.ThreadDispatcher);
         }
@@ -380,6 +407,7 @@ namespace Demos
             {
                 disposed = true;
                 demo?.Dispose();
+                timeSamples.Dispose();
             }
         }
 

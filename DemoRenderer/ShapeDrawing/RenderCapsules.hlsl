@@ -88,6 +88,7 @@ cbuffer PixelConstants : register(b1)
 	float2 PixelSizeAtUnitPlane;
 };
 
+//Like the cylinder, this is just using the scalar version of the intersection routine. It's not very GPU friendly, but thaaaat's okay.
 bool RayCastCapsule(float3 rayDirection, float3 capsulePosition, float4 capsuleOrientation, float radius, float halfLength,
 	out float t, out float3 hitLocation, out float3 hitNormal)
 {

@@ -17,15 +17,15 @@ namespace DemoRenderer.ShapeDrawing
     {
         Buffer<Vector3> vertices;
         public StructuredBuffer<Vector3> TriangleBuffer;
-        QuickSet<ulong, Buffer<ulong>, Buffer<int>, PrimitiveComparer<ulong>> previouslyAllocatedIds;
-        QuickList<ulong, Buffer<ulong>> requestedIds;
+        QuickSet<ulong, PrimitiveComparer<ulong>> previouslyAllocatedIds;
+        QuickList<ulong> requestedIds;
 
         struct UploadRequest
         {
             public int Start;
             public int Count;
         }
-        QuickList<UploadRequest, Buffer<UploadRequest>> pendingUploads;
+        QuickList<UploadRequest> pendingUploads;
 
         public BufferPool Pool { get; private set; }
         Allocator allocator;
@@ -34,11 +34,11 @@ namespace DemoRenderer.ShapeDrawing
             Pool = pool;
             pool.Take(initialSizeInVertices, out vertices);
             TriangleBuffer = new StructuredBuffer<Vector3>(device, initialSizeInVertices, "Mesh Cache Vertex Buffer");
-            allocator = new Allocator(initialSizeInVertices);
+            allocator = new Allocator(initialSizeInVertices, pool);
 
-            QuickList<UploadRequest, Buffer<UploadRequest>>.Create(pool.SpecializeFor<UploadRequest>(), 128, out pendingUploads);
-            QuickList<ulong, Buffer<ulong>>.Create(pool.SpecializeFor<ulong>(), 128, out requestedIds);
-            QuickSet<ulong, Buffer<ulong>, Buffer<int>, PrimitiveComparer<ulong>>.Create(pool.SpecializeFor<ulong>(), pool.SpecializeFor<int>(), 8, 3, out previouslyAllocatedIds);
+            pendingUploads = new QuickList<UploadRequest>(128, pool);
+            requestedIds = new QuickList<ulong>(128, pool);
+            previouslyAllocatedIds = new QuickSet<ulong, PrimitiveComparer<ulong>>(256, pool);
         }
 
         public unsafe bool Allocate(ulong id, int vertexCount, out int start, out Buffer<Vector3> vertices)
@@ -55,12 +55,12 @@ namespace DemoRenderer.ShapeDrawing
             {
                 start = (int)longStart;
                 vertices = this.vertices.Slice(start, vertexCount);
-                pendingUploads.Add(new UploadRequest { Start = start, Count = vertexCount }, Pool.SpecializeFor<UploadRequest>());
+                pendingUploads.Add(new UploadRequest { Start = start, Count = vertexCount }, Pool);
                 return true;
             }
             //Didn't fit. We need to resize.
             var copyCount = TriangleBuffer.Capacity + vertexCount;
-            var newSize = SpanHelper.GetContainingPowerOf2(copyCount);
+            var newSize = 1 << SpanHelper.GetContainingPowerOf2(copyCount);
             Pool.Resize(ref this.vertices, newSize, copyCount);
             allocator.Capacity = newSize;
             allocator.Allocate(id, vertexCount, out longStart);
@@ -68,7 +68,7 @@ namespace DemoRenderer.ShapeDrawing
             vertices = this.vertices.Slice(start, vertexCount);
             //A resize forces an upload of everything, so any previous pending uploads are unnecessary.
             pendingUploads.Count = 0;
-            pendingUploads.Add(new UploadRequest { Start = 0, Count = copyCount }, Pool.SpecializeFor<UploadRequest>());
+            pendingUploads.Add(new UploadRequest { Start = 0, Count = copyCount }, Pool);
             return true;
         }
 
@@ -98,7 +98,7 @@ namespace DemoRenderer.ShapeDrawing
             previouslyAllocatedIds.FastClear();
             for (int i = 0; i < requestedIds.Count; ++i)
             {
-                previouslyAllocatedIds.Add(requestedIds[i], Pool.SpecializeFor<ulong>(), Pool.SpecializeFor<int>());
+                previouslyAllocatedIds.Add(requestedIds[i], Pool);
             }
             requestedIds.Count = 0;
 
@@ -106,7 +106,7 @@ namespace DemoRenderer.ShapeDrawing
             if (allocator.IncrementalCompact(out var compactedId, out var compactedSize, out var oldStart, out var newStart))
             {
                 vertices.CopyTo((int)oldStart, ref vertices, (int)newStart, (int)compactedSize);
-                pendingUploads.Add(new UploadRequest { Start = (int)newStart, Count = (int)compactedSize }, Pool.SpecializeFor<UploadRequest>());
+                pendingUploads.Add(new UploadRequest { Start = (int)newStart, Count = (int)compactedSize }, Pool);
             }
 
         }
@@ -117,10 +117,11 @@ namespace DemoRenderer.ShapeDrawing
             if (!disposed)
             {
                 TriangleBuffer.Dispose();
-                pendingUploads.Dispose(Pool.SpecializeFor<UploadRequest>());
+                pendingUploads.Dispose(Pool);
                 Pool.Return(ref vertices);
-                requestedIds.Dispose(Pool.SpecializeFor<ulong>());
-                previouslyAllocatedIds.Dispose(Pool.SpecializeFor<ulong>(), Pool.SpecializeFor<int>());
+                requestedIds.Dispose(Pool);
+                previouslyAllocatedIds.Dispose(Pool);
+                allocator.Dispose();
                 disposed = true;
             }
         }

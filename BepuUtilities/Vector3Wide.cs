@@ -54,6 +54,7 @@ namespace BepuUtilities
             result.Y = a.Y - b.Y;
             result.Z = a.Z - b.Z;
         }
+
         /// <summary>
         /// Finds the result of subtracting a scalar from every component of a vector.
         /// </summary>
@@ -175,6 +176,14 @@ namespace BepuUtilities
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void ConditionallyNegate(in Vector<int> shouldNegate, ref Vector3Wide v)
+        {
+            v.X = Vector.ConditionalSelect(shouldNegate, -v.X, v.X);
+            v.Y = Vector.ConditionalSelect(shouldNegate, -v.Y, v.Y);
+            v.Z = Vector.ConditionalSelect(shouldNegate, -v.Z, v.Z);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void CrossWithoutOverlap(in Vector3Wide a, in Vector3Wide b, out Vector3Wide result)
         {
             //This will fail if the result reference is actually a or b! 
@@ -233,10 +242,21 @@ namespace BepuUtilities
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void ReadSlot(ref Vector3Wide wide, int slotIndex, out Vector3 narrow)
         {
-            ref var start = ref Unsafe.Add(ref Unsafe.As<Vector<float>, float>(ref wide.X), slotIndex);
-            narrow.X = start;
-            narrow.Y = Unsafe.Add(ref start, Vector<float>.Count);
-            narrow.Z = Unsafe.Add(ref start, 2 * Vector<float>.Count);
+            ref var offset = ref GatherScatter.GetOffsetInstance(ref wide, slotIndex);
+            ReadFirst(offset, out narrow);
+        }
+
+        /// <summary>
+        /// Multiplies the components of one vector with another.
+        /// </summary>
+        /// <param name="a">First vector to multiply.</param>
+        /// <param name="b">Second vector to multiply.</param>
+        /// <param name="result">Result of the multiplication.</param>
+        public static void Multiply(in Vector3Wide a, in Vector3Wide b, out Vector3Wide result)
+        {
+            result.X = a.X * b.X;
+            result.Y = a.Y * b.Y;
+            result.Z = a.Z * b.Z;
         }
 
         /// <summary>
@@ -269,5 +289,6 @@ namespace BepuUtilities
         {
             return $"<{X}, {Y}, {Z}>";
         }
+
     }
 }

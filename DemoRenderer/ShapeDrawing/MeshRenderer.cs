@@ -49,19 +49,10 @@ namespace DemoRenderer.ShapeDrawing
             pixelShader = new PixelShader(device, cache.GetShader(@"ShapeDrawing\RenderMeshes.hlsl.pshader"));
         }
 
-        public unsafe void Render(DeviceContext context, Camera camera, Int2 screenResolution, MeshInstance[] instances, int start, int count)
+        public unsafe void Render(DeviceContext context, Camera camera, Int2 screenResolution, Span<MeshInstance> instances, int start, int count)
         {
             //Examine the set of instances and batch them into groups using the same mesh data.
-            var keyPool = meshCache.Pool.SpecializeFor<ulong>();
-            var valuePool = meshCache.Pool.SpecializeFor<QuickList<MeshInstance, Buffer<MeshInstance>>>();
-            var tablePool = meshCache.Pool.SpecializeFor<int>();
-            var instancePool = meshCache.Pool.SpecializeFor<MeshInstance>();
-            //(but is this ENOUGH generics?)
-            QuickDictionary<
-                ulong, QuickList<MeshInstance,
-                Buffer<MeshInstance>>, Buffer<ulong>,
-                Buffer<QuickList<MeshInstance, Buffer<MeshInstance>>>, Buffer<int>,
-                PrimitiveComparer<ulong>>.Create(keyPool, valuePool, tablePool, 4, 3, out var batches);
+            var batches = new QuickDictionary<ulong, QuickList<MeshInstance>, PrimitiveComparer<ulong>>(16, meshCache.Pool);
             var end = start + count;
             for (int i = start; i < end; ++i)
             {
@@ -71,7 +62,7 @@ namespace DemoRenderer.ShapeDrawing
                 if (batches.GetTableIndices(ref id, out var tableIndex, out var elementIndex))
                 {
                     //The id was already present.
-                    batches.Values[elementIndex].Add(ref instance, instancePool);
+                    batches.Values[elementIndex].Add(instance, meshCache.Pool);
                 }
                 else
                 {
@@ -79,14 +70,14 @@ namespace DemoRenderer.ShapeDrawing
                     var newCount = batches.Count + 1;
                     if (newCount > batches.Keys.Length)
                     {
-                        batches.Resize(newCount, keyPool, valuePool, tablePool);
+                        batches.Resize(newCount, meshCache.Pool);
                         //Resizing will change the table indices, so we have to grab it again.
                         batches.GetTableIndices(ref id, out tableIndex, out _);
                     }
                     batches.Keys[batches.Count] = id;
                     ref var listSlot = ref batches.Values[batches.Count];
-                    QuickList<MeshInstance, Buffer<MeshInstance>>.Create(instancePool, 64, out listSlot);
-                    listSlot.Add(ref instance, instancePool);
+                    listSlot = new QuickList<MeshInstance>(64, meshCache.Pool);
+                    listSlot.Add(instance, meshCache.Pool);
                     batches.Table[tableIndex] = newCount;
                     batches.Count = newCount;
                 }
@@ -123,10 +114,10 @@ namespace DemoRenderer.ShapeDrawing
                     context.DrawInstanced(batchVertexCount, subbatchCount, 0, 0);
                     batch.Count -= subbatchCount;
                 }
-                batch.Dispose(instancePool);
+                batch.Dispose(meshCache.Pool);
             }
-            batches.Dispose(keyPool, valuePool, tablePool);
-            
+            batches.Dispose(meshCache.Pool);
+
         }
 
         bool disposed;

@@ -18,7 +18,7 @@ namespace BepuPhysics.CollisionDetection
             constraintRemover = narrowPhase.ConstraintRemover;
         }
 
-        public void CreateJobs(int threadCount, ref QuickList<PreflushJob, Buffer<PreflushJob>> jobs, BufferPool pool, int mappingCount)
+        public void CreateJobs(int threadCount, ref QuickList<PreflushJob> jobs, BufferPool pool, int mappingCount)
         {
             if (mappingCount > 0)
             {
@@ -29,7 +29,7 @@ namespace BepuPhysics.CollisionDetection
                     var pairsPerJob = mappingCount / freshnessJobCount;
                     var remainder = mappingCount - pairsPerJob * freshnessJobCount;
                     int previousEnd = 0;
-                    jobs.EnsureCapacity(jobs.Count + freshnessJobCount, pool.SpecializeFor<PreflushJob>());
+                    jobs.EnsureCapacity(jobs.Count + freshnessJobCount, pool);
                     int jobIndex = 0;
                     while (previousEnd < mappingCount)
                     {
@@ -47,7 +47,7 @@ namespace BepuPhysics.CollisionDetection
                 }
                 else
                 {
-                    jobs.Add(new PreflushJob { Type = PreflushJobType.CheckFreshness, Start = 0, End = mappingCount }, pool.SpecializeFor<PreflushJob>());
+                    jobs.Add(new PreflushJob { Type = PreflushJobType.CheckFreshness, Start = 0, End = mappingCount }, pool);
                 }
             }
         }
@@ -140,7 +140,7 @@ namespace BepuPhysics.CollisionDetection
             ref var batch = ref constraintRemover.solver.ActiveSet.Batches[location.BatchIndex];
             ref var typeBatch = ref batch.TypeBatches[batch.TypeIndexToTypeBatchIndex[location.TypeId]];
             Debug.Assert(typeBatch.TypeId == location.TypeId);
-            ConstraintReferenceCollector enumerator;
+            ReferenceCollector enumerator;
             enumerator.Index = 0;
             var typeProcessor = constraintRemover.solver.TypeProcessors[location.TypeId];
             var references = stackalloc int[typeProcessor.BodiesPerConstraint];
@@ -164,7 +164,7 @@ namespace BepuPhysics.CollisionDetection
             var constraintHandle = pairCache.GetOldConstraintHandle(pairIndex);
             constraintRemover.EnqueueRemoval(workerIndex, constraintHandle);
             ref var cache = ref pairCache.NextWorkerCaches[workerIndex];
-            cache.PendingRemoves.Add(pairCache.Mapping.Keys[pairIndex], cache.pool.SpecializeFor<CollidablePair>());
+            cache.PendingRemoves.Add(pairCache.Mapping.Keys[pairIndex], cache.pool);
         }
     }
 }

@@ -43,9 +43,9 @@ namespace Demos.SpecializedTests
         static void FillTrashBuffers(Simulation simulation, Random random)
         {
             var pool = simulation.BufferPool.SpecializeFor<int>();
-            var bufferPool = simulation.BufferPool.SpecializeFor<Buffer<int>>();
+            var bufferPool = simulation.BufferPool;
             const int bufferCount = 50;
-            QuickList<Buffer<int>, Buffer<Buffer<int>>>.Create(bufferPool, bufferCount, out var bufferList);
+            var bufferList = new QuickList<Buffer<int>>(bufferCount, bufferPool);
             for (int trashBufferIndex = 0; trashBufferIndex < bufferCount; ++trashBufferIndex)
             {
                 //Pull a buffer from the pool, fill it with trash data, and return it. 
@@ -62,7 +62,7 @@ namespace Demos.SpecializedTests
         }
         public static void Test()
         {
-            var simulation = Simulation.Create(new BufferPool(), new TestCallbacks());
+            var simulation = Simulation.Create(new BufferPool(), new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
             var sphere = new Sphere(0.5f);
             var shapeIndex = simulation.Shapes.Add(sphere);
 
@@ -100,8 +100,7 @@ namespace Demos.SpecializedTests
             SimulationScrambling.ScrambleBodyConstraintLists(simulation);
             SimulationScrambling.AddRemoveChurn<BallSocket>(simulation, 1000, bodyHandles, constraintHandles);
 
-
-            simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            
             ref var location = ref simulation.Bodies.HandleToLocation[bodyHandles[width]];
             Debug.Assert(location.SetIndex == 0, "Nothing above should result in inactive objects.");
             simulation.Bodies.ActiveSet.Velocities[location.Index].Linear = new Vector3(0.1f, 0, 0.1f);

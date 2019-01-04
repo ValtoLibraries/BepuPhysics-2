@@ -165,12 +165,12 @@ namespace BepuPhysics.Trees
                 leafCountB = 0;
                 for (int i = 0; i < splitIndex; ++i)
                 {
-                    BoundingBox.CreateMerged(ref a, ref resources.BoundingBoxes[localIndexMap[i]], out a);
+                    BoundingBox.CreateMerged(a, resources.BoundingBoxes[localIndexMap[i]], out a);
                     leafCountA += resources.LeafCounts[localIndexMap[i]];
                 }
                 for (int i = splitIndex; i < count; ++i)
                 {
-                    BoundingBox.CreateMerged(ref b, ref resources.BoundingBoxes[localIndexMap[i]], out b);
+                    BoundingBox.CreateMerged(b, resources.BoundingBoxes[localIndexMap[i]], out b);
                     leafCountB += resources.LeafCounts[localIndexMap[i]];
                 }
                 splitIndex += start;
@@ -235,9 +235,9 @@ namespace BepuPhysics.Trees
                 ++resources.BinSubtreeCountsY[y];
                 ++resources.BinSubtreeCountsZ[z];
 
-                BoundingBox.CreateMerged(ref resources.BinBoundingBoxesX[x], ref *subtreeBoundingBox, out resources.BinBoundingBoxesX[x]);
-                BoundingBox.CreateMerged(ref resources.BinBoundingBoxesY[y], ref *subtreeBoundingBox, out resources.BinBoundingBoxesY[y]);
-                BoundingBox.CreateMerged(ref resources.BinBoundingBoxesZ[z], ref *subtreeBoundingBox, out resources.BinBoundingBoxesZ[z]);
+                BoundingBox.CreateMerged(resources.BinBoundingBoxesX[x], *subtreeBoundingBox, out resources.BinBoundingBoxesX[x]);
+                BoundingBox.CreateMerged(resources.BinBoundingBoxesY[y], *subtreeBoundingBox, out resources.BinBoundingBoxesY[y]);
+                BoundingBox.CreateMerged(resources.BinBoundingBoxesZ[z], *subtreeBoundingBox, out resources.BinBoundingBoxesZ[z]);
             }
 
             //Determine split axes for all axes simultaneously.
@@ -256,9 +256,9 @@ namespace BepuPhysics.Trees
                 resources.ALeafCountsX[i] = resources.BinLeafCountsX[i] + resources.ALeafCountsX[previousIndex];
                 resources.ALeafCountsY[i] = resources.BinLeafCountsY[i] + resources.ALeafCountsY[previousIndex];
                 resources.ALeafCountsZ[i] = resources.BinLeafCountsZ[i] + resources.ALeafCountsZ[previousIndex];
-                BoundingBox.CreateMerged(ref resources.AMergedX[previousIndex], ref resources.BinBoundingBoxesX[i], out resources.AMergedX[i]);
-                BoundingBox.CreateMerged(ref resources.AMergedY[previousIndex], ref resources.BinBoundingBoxesY[i], out resources.AMergedY[i]);
-                BoundingBox.CreateMerged(ref resources.AMergedZ[previousIndex], ref resources.BinBoundingBoxesZ[i], out resources.AMergedZ[i]);
+                BoundingBox.CreateMerged(resources.AMergedX[previousIndex], resources.BinBoundingBoxesX[i], out resources.AMergedX[i]);
+                BoundingBox.CreateMerged(resources.AMergedY[previousIndex], resources.BinBoundingBoxesY[i], out resources.AMergedY[i]);
+                BoundingBox.CreateMerged(resources.AMergedZ[previousIndex], resources.BinBoundingBoxesZ[i], out resources.AMergedZ[i]);
             }
 
             //Sweep from high to low.
@@ -281,9 +281,9 @@ namespace BepuPhysics.Trees
             for (int i = lastIndex; i >= 1; --i)
             {
                 int aIndex = i - 1;
-                BoundingBox.CreateMerged(ref bMergedX, ref resources.BinBoundingBoxesX[i], out bMergedX);
-                BoundingBox.CreateMerged(ref bMergedY, ref resources.BinBoundingBoxesY[i], out bMergedY);
-                BoundingBox.CreateMerged(ref bMergedZ, ref resources.BinBoundingBoxesZ[i], out bMergedZ);
+                BoundingBox.CreateMerged(bMergedX, resources.BinBoundingBoxesX[i], out bMergedX);
+                BoundingBox.CreateMerged(bMergedY, resources.BinBoundingBoxesY[i], out bMergedY);
+                BoundingBox.CreateMerged(bMergedZ, resources.BinBoundingBoxesZ[i], out bMergedZ);
                 bLeafCountX += resources.BinLeafCountsX[i];
                 bLeafCountY += resources.BinLeafCountsY[i];
                 bLeafCountZ += resources.BinLeafCountsZ[i];
@@ -356,7 +356,7 @@ namespace BepuPhysics.Trees
                 }
 
             }
-
+           
 
             int* bestBinSubtreeCounts;
             int* bestSubtreeBinIndices;
@@ -493,7 +493,7 @@ namespace BepuPhysics.Trees
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         unsafe void ReifyChildren(int internalNodeIndex, Node* stagingNodes,
-            ref QuickList<int, Buffer<int>> subtrees, ref QuickList<int, Buffer<int>> treeletInternalNodes, ref int nextInternalNodeIndexToUse)
+            ref QuickList<int> subtrees, ref QuickList<int> treeletInternalNodes, ref int nextInternalNodeIndexToUse)
         {
             Debug.Assert(subtrees.Count > 1);
             var internalNode = nodes + internalNodeIndex;
@@ -533,7 +533,7 @@ namespace BepuPhysics.Trees
         }
 
         unsafe int ReifyStagingNode(int parent, int indexInParent, Node* stagingNodes, int stagingNodeIndex,
-           ref QuickList<int, Buffer<int>> subtrees, ref QuickList<int, Buffer<int>> treeletInternalNodes,
+           ref QuickList<int> subtrees, ref QuickList<int> treeletInternalNodes,
            ref int nextInternalNodeIndexToUse)
         {
 
@@ -564,7 +564,7 @@ namespace BepuPhysics.Trees
         }
 
         unsafe void ReifyStagingNodes(int treeletRootIndex, Node* stagingNodes,
-            ref QuickList<int, Buffer<int>> subtrees, ref QuickList<int, Buffer<int>> treeletInternalNodes, ref int nextInternalNodeIndexToUse)
+            ref QuickList<int> subtrees, ref QuickList<int> treeletInternalNodes, ref int nextInternalNodeIndexToUse)
         {
             //We take the staging node's child bounds, child indices, leaf counts, and child count.
             //The parent and index in parent of the treelet root CANNOT BE TOUCHED.
@@ -578,8 +578,8 @@ namespace BepuPhysics.Trees
 
 
         public unsafe void BinnedRefine(int nodeIndex,
-            ref QuickList<int, Buffer<int>> subtreeReferences, int maximumSubtrees,
-            ref QuickList<int, Buffer<int>> treeletInternalNodes,
+            ref QuickList<int> subtreeReferences, int maximumSubtrees,
+            ref QuickList<int> treeletInternalNodes,
             ref BinnedResources resources, BufferPool pool)
         {
             Debug.Assert(subtreeReferences.Count == 0, "The subtree references list should be empty since it's about to get filled.");

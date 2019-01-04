@@ -8,6 +8,7 @@ using System;
 using DemoRenderer.ShapeDrawing;
 using DemoRenderer.Constraints;
 using BepuUtilities.Memory;
+using DemoUtilities;
 
 namespace DemoRenderer
 {
@@ -20,6 +21,7 @@ namespace DemoRenderer
         //They'll likely be stored in an array indexed by a shape type rather than just being a swarm of properties.
         public RayTracedRenderer<SphereInstance> SphereRenderer { get; private set; }
         public RayTracedRenderer<CapsuleInstance> CapsuleRenderer { get; private set; }
+        public RayTracedRenderer<CylinderInstance> CylinderRenderer { get; private set; }
         public BoxRenderer BoxRenderer { get; private set; }
         public TriangleRenderer TriangleRenderer { get; private set; }
         public MeshRenderer MeshRenderer { get; private set; }
@@ -68,10 +70,11 @@ namespace DemoRenderer
             Shapes = new ShapesExtractor(Surface.Device, looper, pool);
             SphereRenderer = new RayTracedRenderer<SphereInstance>(surface.Device, ShaderCache, @"ShapeDrawing\RenderSpheres.hlsl");
             CapsuleRenderer = new RayTracedRenderer<CapsuleInstance>(surface.Device, ShaderCache, @"ShapeDrawing\RenderCapsules.hlsl");
+            CylinderRenderer = new RayTracedRenderer<CylinderInstance>(surface.Device, ShaderCache, @"ShapeDrawing\RenderCylinders.hlsl");
             BoxRenderer = new BoxRenderer(surface.Device, ShaderCache);
             TriangleRenderer = new TriangleRenderer(surface.Device, ShaderCache);
             MeshRenderer = new MeshRenderer(surface.Device, Shapes.MeshCache, ShaderCache);
-            Lines = new LineExtractor(looper);
+            Lines = new LineExtractor(pool, looper);
             LineRenderer = new LineRenderer(surface.Device, ShaderCache);
             Background = new BackgroundRenderer(surface.Device, ShaderCache);
             CompressToSwap = new CompressToSwap(surface.Device, ShaderCache);
@@ -225,15 +228,16 @@ namespace DemoRenderer
 
             //All ray traced shapes use analytic coverage writes to get antialiasing.
             context.OutputMerger.SetBlendState(a2cBlendState);
-            SphereRenderer.Render(context, camera, Surface.Resolution, Shapes.spheres.Span.Memory, 0, Shapes.spheres.Count);
-            CapsuleRenderer.Render(context, camera, Surface.Resolution, Shapes.capsules.Span.Memory, 0, Shapes.capsules.Count);
+            SphereRenderer.Render(context, camera, Surface.Resolution, SpanConverter.AsSpan(Shapes.spheres.Span), 0, Shapes.spheres.Count);
+            CapsuleRenderer.Render(context, camera, Surface.Resolution, SpanConverter.AsSpan(Shapes.capsules.Span), 0, Shapes.capsules.Count);
+            CylinderRenderer.Render(context, camera, Surface.Resolution, SpanConverter.AsSpan(Shapes.cylinders.Span), 0, Shapes.cylinders.Count);
 
             //Non-raytraced shapes just use regular opaque rendering.
             context.OutputMerger.SetBlendState(opaqueBlendState);
-            BoxRenderer.Render(context, camera, Surface.Resolution, Shapes.boxes.Span.Memory, 0, Shapes.boxes.Count);
-            TriangleRenderer.Render(context, camera, Surface.Resolution, Shapes.triangles.Span.Memory, 0, Shapes.triangles.Count);
-            MeshRenderer.Render(context, camera, Surface.Resolution, Shapes.meshes.Span.Memory, 0, Shapes.meshes.Count);
-            LineRenderer.Render(context, camera, Surface.Resolution, Lines.lines.Span.Memory, 0, Lines.lines.Count);
+            BoxRenderer.Render(context, camera, Surface.Resolution, SpanConverter.AsSpan(Shapes.boxes.Span), 0, Shapes.boxes.Count);
+            TriangleRenderer.Render(context, camera, Surface.Resolution, SpanConverter.AsSpan(Shapes.triangles.Span), 0, Shapes.triangles.Count);
+            MeshRenderer.Render(context, camera, Surface.Resolution, SpanConverter.AsSpan(Shapes.meshes.Span), 0, Shapes.meshes.Count);
+            LineRenderer.Render(context, camera, Surface.Resolution, SpanConverter.AsSpan(Lines.lines.Span), 0, Lines.lines.Count);
 
             Background.Render(context, camera);
 
@@ -265,8 +269,11 @@ namespace DemoRenderer
                 Background.Dispose();
                 CompressToSwap.Dispose();
 
+                Lines.Dispose();
+
                 SphereRenderer.Dispose();
                 CapsuleRenderer.Dispose();
+                CylinderRenderer.Dispose();
                 BoxRenderer.Dispose();
                 TriangleRenderer.Dispose();
                 MeshRenderer.Dispose();

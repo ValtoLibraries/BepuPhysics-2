@@ -157,7 +157,7 @@ namespace BepuPhysics.CollisionDetection
             }
             AddConstraint(workerIndex, manifoldConstraintType, ref pair, constraintCacheIndex, ref newImpulses, bodyHandles, ref description);
         }
-
+        
         public unsafe void UpdateConstraint<TBodyHandles, TDescription, TContactImpulses, TCollisionCache, TConstraintCache>(int workerIndex, ref CollidablePair pair,
             int manifoldTypeAsConstraintType, ref TConstraintCache newConstraintCache, ref TCollisionCache collisionCache,
             ref TDescription description, TBodyHandles bodyHandles)
@@ -237,7 +237,7 @@ namespace BepuPhysics.CollisionDetection
                     if (locationA.SetIndex != locationB.SetIndex)
                     {
                         ref var overlapWorker = ref overlapWorkers[workerIndex];
-                        overlapWorker.PendingSetAwakenings.Add(locationA.SetIndex > 0 ? locationA.SetIndex : locationB.SetIndex, overlapWorker.Batcher.Pool.SpecializeFor<int>());
+                        overlapWorker.PendingSetAwakenings.Add(locationA.SetIndex > 0 ? locationA.SetIndex : locationB.SetIndex, overlapWorker.Batcher.Pool);
                     }
                 }
             }

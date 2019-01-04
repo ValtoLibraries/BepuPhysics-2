@@ -80,7 +80,7 @@ namespace BepuPhysics.CollisionDetection
 
         public abstract void DeterministicallyAdd<TCallbacks>(
             int typeIndex, NarrowPhase<TCallbacks>.OverlapWorker[] overlapWorkers,
-            ref QuickList<NarrowPhase<TCallbacks>.SortConstraintTarget, Buffer<NarrowPhase<TCallbacks>.SortConstraintTarget>> constraintsOfType,
+            ref QuickList<NarrowPhase<TCallbacks>.SortConstraintTarget> constraintsOfType,
             Simulation simulation, PairCache pairCache) where TCallbacks : struct, INarrowPhaseCallbacks;
 
         public abstract void FlushWithSpeculativeBatches<TCallbacks>(ref UntypedList list, int narrowPhaseConstraintTypeId,
@@ -95,7 +95,6 @@ namespace BepuPhysics.CollisionDetection
             ref CollidablePair pair, ref TContactManifold manifoldPointer, ref TCollisionCache collisionCache, ref PairMaterialProperties material, TCallBodyHandles bodyHandles)
             where TCallbacks : struct, INarrowPhaseCallbacks
             where TCollisionCache : IPairCacheEntry;
-
     }
 
     //Note that the vast majority of the 'work' done by these accessor implementations is just type definitions used to call back into some other functions that need that type knowledge.
@@ -143,7 +142,7 @@ namespace BepuPhysics.CollisionDetection
             ConstraintTypeId = default(TConstraintDescription).ConstraintTypeId;
         }
         public override void DeterministicallyAdd<TCallbacks>(int typeIndex, NarrowPhase<TCallbacks>.OverlapWorker[] overlapWorkers,
-            ref QuickList<NarrowPhase<TCallbacks>.SortConstraintTarget, Buffer<NarrowPhase<TCallbacks>.SortConstraintTarget>> constraintsOfType,
+            ref QuickList<NarrowPhase<TCallbacks>.SortConstraintTarget> constraintsOfType,
             Simulation simulation, PairCache pairCache)
         {
             for (int i = 0; i < constraintsOfType.Count; ++i)
@@ -210,7 +209,7 @@ namespace BepuPhysics.CollisionDetection
                 targetContact.Normal = sourceContact.Normal;
                 targetContact.PenetrationDepth = sourceContact.Depth;
             }
-        }
+        }        
     }
     public class ConvexOneBodyAccessor<TConstraintDescription, TAccumulatedImpulses, TContactImpulses, TConstraintCache> :
         ContactConstraintAccessor<TConstraintDescription, int, TAccumulatedImpulses, TContactImpulses, TConstraintCache>

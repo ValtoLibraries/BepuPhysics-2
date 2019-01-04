@@ -30,14 +30,14 @@ namespace BepuPhysics.Trees
             {
                 childChange += RefitAndMeasure(ref b);
             }
-            BoundingBox.CreateMerged(ref a.Min, ref a.Max, ref b.Min, ref b.Max, out child.Min, out child.Max);
+            BoundingBox.CreateMerged(a.Min, a.Max, b.Min, b.Max, out child.Min, out child.Max);
 
             var postmetric = ComputeBoundsMetric(ref child.Min, ref child.Max);
             return postmetric - premetric + childChange; //TODO: would clamping produce a superior result?
 
         }
 
-        unsafe float RefitAndMark(ref NodeChild child, int leafCountThreshold, ref QuickList<int, Buffer<int>> refinementCandidates, BufferPool<int> intPool)
+        unsafe float RefitAndMark(ref NodeChild child, int leafCountThreshold, ref QuickList<int> refinementCandidates, BufferPool pool)
         {
             Debug.Assert(leafCountThreshold > 1);
 
@@ -54,12 +54,12 @@ namespace BepuPhysics.Trees
             {
                 if (a.LeafCount <= leafCountThreshold)
                 {
-                    refinementCandidates.Add(a.Index, intPool);
+                    refinementCandidates.Add(a.Index, pool);
                     childChange += RefitAndMeasure(ref a);
                 }
                 else
                 {
-                    childChange += RefitAndMark(ref a, leafCountThreshold, ref refinementCandidates, intPool);
+                    childChange += RefitAndMark(ref a, leafCountThreshold, ref refinementCandidates, pool);
                 }
             }
             ref var b = ref node->B;
@@ -67,16 +67,16 @@ namespace BepuPhysics.Trees
             {
                 if (b.LeafCount <= leafCountThreshold)
                 {
-                    refinementCandidates.Add(b.Index, intPool);
+                    refinementCandidates.Add(b.Index, pool);
                     childChange += RefitAndMeasure(ref b);
                 }
                 else
                 {
-                    childChange += RefitAndMark(ref b, leafCountThreshold, ref refinementCandidates, intPool);
+                    childChange += RefitAndMark(ref b, leafCountThreshold, ref refinementCandidates, pool);
                 }
             }
 
-            BoundingBox.CreateMerged(ref a.Min, ref a.Max, ref b.Min, ref b.Max, out child.Min, out child.Max);
+            BoundingBox.CreateMerged(a.Min, a.Max, b.Min, b.Max, out child.Min, out child.Max);
 
 
             var postmetric = ComputeBoundsMetric(ref child.Min, ref child.Max);
@@ -87,7 +87,7 @@ namespace BepuPhysics.Trees
 
         }
 
-        unsafe float RefitAndMark(int leafCountThreshold, ref QuickList<int, Buffer<int>> refinementCandidates, BufferPool<int> intPool)
+        unsafe float RefitAndMark(int leafCountThreshold, ref QuickList<int> refinementCandidates, BufferPool pool)
         {
             Debug.Assert(LeafCount > 2, "There's no reason to refit a tree with 2 or less elements. Nothing would happen.");
 
@@ -105,15 +105,15 @@ namespace BepuPhysics.Trees
                     {
                         //The wavefront of internal nodes is defined by the transition from more than threshold to less than threshold.
                         //Since we don't traverse into these children, there is no need to check the parent's leaf count.
-                        refinementCandidates.Add(child.Index, intPool);
+                        refinementCandidates.Add(child.Index, pool);
                         childChange += RefitAndMeasure(ref child);
                     }
                     else
                     {
-                        childChange += RefitAndMark(ref child, leafCountThreshold, ref refinementCandidates, intPool);
+                        childChange += RefitAndMark(ref child, leafCountThreshold, ref refinementCandidates, pool);
                     }
                 }
-                BoundingBox.CreateMerged(ref child.Min, ref child.Max, ref merged.Min, ref merged.Max, out merged.Min, out merged.Max);
+                BoundingBox.CreateMerged(child.Min, child.Max, merged.Min, merged.Max, out merged.Min, out merged.Max);
             }
 
             var postmetric = ComputeBoundsMetric(ref merged);
@@ -195,17 +195,16 @@ namespace BepuPhysics.Trees
             if (leafCount <= 2)
                 return;
             GetRefitAndMarkTuning(out int maximumSubtrees, out int estimatedRefinementCandidateCount, out int leafCountThreshold);
-            var intPool = pool.SpecializeFor<int>();
-            QuickList<int, Buffer<int>>.Create(intPool, estimatedRefinementCandidateCount, out var refinementCandidates);
+            var refinementCandidates = new QuickList<int>(estimatedRefinementCandidateCount, pool);
 
             //Collect the refinement candidates.
-            var costChange = RefitAndMark(leafCountThreshold, ref refinementCandidates, pool.SpecializeFor<int>());
+            var costChange = RefitAndMark(leafCountThreshold, ref refinementCandidates, pool);
 
 
             GetRefineTuning(frameIndex, refinementCandidates.Count, refineAggressivenessScale, costChange, out int targetRefinementCount, out int period, out int offset);
 
 
-            QuickList<int, Buffer<int>>.Create(intPool, targetRefinementCount, out var refinementTargets);
+            var refinementTargets = new QuickList<int>(targetRefinementCount, pool);
 
             int index = offset;
             for (int i = 0; i < targetRefinementCount - 1; ++i)
@@ -217,7 +216,7 @@ namespace BepuPhysics.Trees
                 Debug.Assert(metanodes[refinementCandidates[index]].RefineFlag == 0, "Refinement target search shouldn't run into the same node twice!");
                 metanodes[refinementCandidates[index]].RefineFlag = 1;
             }
-            refinementCandidates.Dispose(intPool);
+            refinementCandidates.Dispose(pool);
             if (metanodes->RefineFlag == 0)
             {
                 refinementTargets.AddUnsafely(0);
@@ -226,8 +225,8 @@ namespace BepuPhysics.Trees
 
             //Refine all marked targets.
 
-            QuickList<int, Buffer<int>>.Create(intPool, maximumSubtrees, out var subtreeReferences);
-            QuickList<int, Buffer<int>>.Create(intPool, maximumSubtrees, out var treeletInternalNodes);
+            var subtreeReferences = new QuickList<int>(maximumSubtrees, pool);
+            var treeletInternalNodes = new QuickList<int>(maximumSubtrees, pool);
 
             CreateBinnedResources(pool, maximumSubtrees, out var buffer, out var resources);
 
@@ -245,9 +244,9 @@ namespace BepuPhysics.Trees
             }
 
             pool.Return(ref buffer);
-            subtreeReferences.Dispose(intPool);
-            treeletInternalNodes.Dispose(intPool);
-            refinementTargets.Dispose(intPool);
+            subtreeReferences.Dispose(pool);
+            treeletInternalNodes.Dispose(pool);
+            refinementTargets.Dispose(pool);
 
             var cacheOptimizeCount = GetCacheOptimizeTuning(maximumSubtrees, costChange, cacheOptimizeAggressivenessScale);
 

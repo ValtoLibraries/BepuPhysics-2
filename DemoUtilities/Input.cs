@@ -10,8 +10,8 @@ using System.Text;
 
 namespace DemoUtilities
 {
-    using KeySet = QuickSet<Key, Array<Key>, Array<int>, KeyComparer>;
-    using MouseButtonSet = QuickSet<MouseButton, Array<MouseButton>, Array<int>, MouseButtonComparer>;
+    using KeySet = QuickSet<Key, KeyComparer>;
+    using MouseButtonSet = QuickSet<MouseButton, MouseButtonComparer>;
     struct KeyComparer : IEqualityComparerRef<Key>
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -52,8 +52,8 @@ namespace DemoUtilities
         MouseButtonSet anyDownedButtons;
         MouseButtonSet downedButtons;
         MouseButtonSet previousDownedButtons;
-        public QuickList<char, Array<char>> TypedCharacters;
-
+        BufferPool pool;
+        public QuickList<char> TypedCharacters;
 
         /// <summary>
         /// Forces the mouse to stay at the center of the screen by recentering it on every flush.
@@ -107,7 +107,7 @@ namespace DemoUtilities
         /// </summary>
         public float ScrollDelta { get { return ScrolledUp + ScrolledDown; } }
 
-        public Input(Window window)
+        public Input(Window window, BufferPool pool)
         {
             this.window = window.window;
             this.window.KeyDown += KeyDown;
@@ -116,21 +116,19 @@ namespace DemoUtilities
             this.window.MouseUp += MouseUp;
             this.window.MouseWheel += MouseWheel;
             this.window.KeyPress += KeyPress;
-            var keyPool = new PassthroughArrayPool<Key>();
-            var mouseButtonPool = new PassthroughArrayPool<MouseButton>();
-            var intPool = new PassthroughArrayPool<int>();
-            MouseButtonSet.Create(mouseButtonPool, intPool, 3, 3, out anyDownedButtons);
-            MouseButtonSet.Create(mouseButtonPool, intPool, 3, 3, out downedButtons);
-            MouseButtonSet.Create(mouseButtonPool, intPool, 3, 3, out previousDownedButtons);
-            KeySet.Create(keyPool, intPool, 3, 3, out anyDownedKeys);
-            KeySet.Create(keyPool, intPool, 3, 3, out downedKeys);
-            KeySet.Create(keyPool, intPool, 3, 3, out previousDownedKeys);
-            QuickList<char, Array<char>>.Create(new PassthroughArrayPool<char>(), 32, out TypedCharacters);
+            this.pool = pool;
+            anyDownedButtons = new MouseButtonSet(8, pool);
+            downedButtons = new MouseButtonSet(8, pool);
+            previousDownedButtons = new MouseButtonSet(8, pool);
+            anyDownedKeys = new KeySet(8, pool);
+            downedKeys = new KeySet(8, pool);
+            previousDownedKeys = new KeySet(8, pool);
+            TypedCharacters = new QuickList<char>(32, pool);
         }
 
         private void KeyPress(object sender, KeyPressEventArgs e)
         {
-            TypedCharacters.Add(e.KeyChar, new PassthroughArrayPool<char>());
+            TypedCharacters.Add(e.KeyChar, pool);
         }
 
         private void MouseWheel(object sender, MouseWheelEventArgs e)
@@ -143,8 +141,8 @@ namespace DemoUtilities
 
         private void MouseDown(object sender, MouseButtonEventArgs e)
         {
-            anyDownedButtons.Add(e.Button, new PassthroughArrayPool<MouseButton>(), new PassthroughArrayPool<int>());
-            downedButtons.Add(e.Button, new PassthroughArrayPool<MouseButton>(), new PassthroughArrayPool<int>());
+            anyDownedButtons.Add(e.Button, pool);
+            downedButtons.Add(e.Button, pool);
         }
         private void MouseUp(object sender, MouseButtonEventArgs e)
         {
@@ -153,11 +151,11 @@ namespace DemoUtilities
 
         private void KeyDown(object sender, KeyboardKeyEventArgs e)
         {
-            anyDownedKeys.Add(e.Key, new PassthroughArrayPool<Key>(), new PassthroughArrayPool<int>());
-            downedKeys.Add(e.Key, new PassthroughArrayPool<Key>(), new PassthroughArrayPool<int>());
+            anyDownedKeys.Add(e.Key, pool);
+            downedKeys.Add(e.Key, pool);
             //Unfortunately, backspace isn't reported by keypress, so we do it manually.
             if (e.Key == Key.BackSpace)
-                TypedCharacters.Add('\b', new PassthroughArrayPool<char>());
+                TypedCharacters.Add('\b', pool);
         }
         private void KeyUp(object sender, KeyboardKeyEventArgs e)
         {
@@ -256,13 +254,10 @@ namespace DemoUtilities
             anyDownedButtons.Clear();
             previousDownedKeys.Clear();
             previousDownedButtons.Clear();
-            var keyPool = new PassthroughArrayPool<Key>();
-            var mouseButtonPool = new PassthroughArrayPool<MouseButton>();
-            var intPool = new PassthroughArrayPool<int>();
             for (int i = 0; i < downedKeys.Count; ++i)
-                previousDownedKeys.Add(downedKeys[i], keyPool, intPool);
+                previousDownedKeys.Add(downedKeys[i], pool);
             for (int i = 0; i < downedButtons.Count; ++i)
-                previousDownedButtons.Add(downedButtons[i], mouseButtonPool, intPool);
+                previousDownedButtons.Add(downedButtons[i], pool);
             ScrolledDown = 0;
             ScrolledUp = 0;
             TypedCharacters.Count = 0;
@@ -277,6 +272,13 @@ namespace DemoUtilities
             window.KeyUp -= KeyUp;
             window.MouseDown -= MouseDown;
             window.MouseUp -= MouseUp;
+
+            anyDownedKeys.Dispose(pool);
+            downedKeys.Dispose(pool);
+            previousDownedKeys.Dispose(pool);
+            anyDownedButtons.Dispose(pool);
+            downedButtons.Dispose(pool);
+            previousDownedButtons.Dispose(pool);
         }
     }
 }

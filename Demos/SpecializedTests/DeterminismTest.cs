@@ -6,73 +6,74 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Text;
+using DemoContentLoader;
 
 namespace Demos.SpecializedTests
 {
-    public static class DeterminismTest
+    public static class DeterminismTest<T> where T : Demo, new()
     {
-        public static RigidPose[] ExecuteSimulation(int frameCount, BufferPool bufferPool, IThreadDispatcher threadDispatcher)
+        struct MotionState
         {
-            var simulation = Simulation.Create(bufferPool, new TestCallbacks());
-            var shape = new Sphere(0.5f);
-            var shapeIndex = simulation.Shapes.Add(shape);
-            const int width = 8;
-            const int height = 8;
-            const int length = 8;
-            SimulationSetup.BuildLattice(
-                new RegularGridWithKinematicBaseBuilder(new Vector3(1.2f, 1.05f, 1.2f), new Vector3(1, 1, 1), 1f / (shape.Radius * shape.Radius * 2 / 3), shapeIndex),
-                new ConstraintlessLatticeBuilder(),
-                width, height, length, simulation, out var bodyHandles, out var constraintHandles);
-            simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
-            simulation.Deterministic = true;
-
-            //All bodies are definitely active, so we can pull directly from the active set.
-            ref var velocity = ref simulation.Bodies.ActiveSet.Velocities[simulation.Bodies.HandleToLocation[bodyHandles[width]].Index];
-            velocity.Linear = new Vector3(.1f, 0, 0.1f);
-            velocity.Angular = new Vector3();
-
-
+            public RigidPose Pose;
+            public BodyVelocity Velocity;
+        }
+        static Dictionary<int, MotionState> ExecuteSimulation(ContentArchive content, int frameCount)
+        {
+            var demo = new T();
+            demo.Initialize(content, new DemoRenderer.Camera(1, 1, 1, 1));
+            Console.Write("Completed frames: ");
             for (int i = 0; i < frameCount; ++i)
             {
-                simulation.Timestep(1 / 60f, threadDispatcher);
-                //TODO: Probably should do add/remove on bodies alone, and possibly a variant that includes SOME constraints.
-                //(not enough to limit the amount of potential nondeterminism from collisions)
-                //Then we can add/remove those. Do need to control the seed too, though.
-                //SimulationScrambling.AddRemoveChurn(simulation, 100, bodyHandles, constraintHandles);
+                demo.Update(null, null, null, 1 / 60f);
+                if ((i + 1) % 32 == 0)
+                    Console.Write($"{i + 1}, ");
             }
-
-            var poses = new RigidPose[bodyHandles.Length];
-            for (int i = 0; i < poses.Length; ++i)
+            var motionStates = new Dictionary<int, MotionState>();
+            for (int setIndex = 0; setIndex < demo.Simulation.Bodies.Sets.Length; ++setIndex)
             {
-                ref var location = ref simulation.Bodies.HandleToLocation[bodyHandles[i]];
-                poses[i] = simulation.Bodies.Sets[location.SetIndex].Poses[location.Index];
-            }
-            simulation.Dispose();
-            return poses;
-        }
-
-        public static void Test()
-        {
-            const int frameCount = 10000;
-            var bufferPool = new BufferPool();
-            SimpleThreadDispatcher dispatcher = new SimpleThreadDispatcher(Environment.ProcessorCount);
-            var initialPoses = ExecuteSimulation(frameCount, bufferPool, dispatcher);
-            Console.WriteLine($"Completed initial test.");
-            const int testIterations = 100;
-            for (int i = 0; i < testIterations; ++i)
-            {
-                var poses = ExecuteSimulation(frameCount, bufferPool, dispatcher);
-                Console.WriteLine($"Completed iteration {i}; checking...");
-                for (int j = 0; j < poses.Length; ++j)
+                ref var set = ref demo.Simulation.Bodies.Sets[setIndex];
+                if (set.Allocated)
                 {
-                    if (initialPoses[j].Position != poses[j].Position || initialPoses[j].Orientation != poses[j].Orientation)
+                    for (int bodyIndex = 0; bodyIndex < set.Count; ++bodyIndex)
                     {
-                        Console.WriteLine($"DETERMINISM FAILURE, test {i}, body {j}. Expected <{initialPoses[j].Position}, {initialPoses[j].Orientation}>, got <{poses[j].Position}, {poses[j].Orientation}>");
+                        motionStates.Add(set.IndexToHandle[bodyIndex], new MotionState { Pose = set.Poses[bodyIndex], Velocity = set.Velocities[bodyIndex] });
                     }
                 }
-                Console.WriteLine($"Test complete.");
             }
-            dispatcher.Dispose();
+            demo.Dispose();
+            Console.WriteLine();
+            return motionStates;
+        }
+
+        public static void Test(ContentArchive archive, int runCount, int frameCount)
+        {
+            var initialStates = ExecuteSimulation(archive, frameCount);
+            Console.WriteLine($"Completed initial run.");
+            for (int i = 0; i < runCount; ++i)
+            {
+                var states = ExecuteSimulation(archive, frameCount);
+                Console.Write($"Completed iteration {i}; checking... ");
+                if (states.Count != initialStates.Count)
+                    Console.WriteLine("DETERMINISM FAILURE: Differing body count.");
+                foreach (var state in states)
+                {
+                    if (!initialStates.TryGetValue(state.Key, out var initialState))
+                        Console.WriteLine($"FAILURE: Body {state.Key} does not exist in first run results.");
+                    else
+                    {
+                        if (state.Value.Pose.Position != initialState.Pose.Position)
+                            Console.WriteLine($"FAILURE: Position, current: {state.Value.Pose.Position}, original: {initialState.Pose.Position}");
+                        if (state.Value.Pose.Orientation != initialState.Pose.Orientation)
+                            Console.WriteLine($"FAILURE: Orientation, current: {state.Value.Pose.Orientation}, original: {initialState.Pose.Orientation}");
+                        if (state.Value.Velocity.Linear != initialState.Velocity.Linear)
+                            Console.WriteLine($"FAILURE: Linear velocity, current: {state.Value.Velocity.Linear}, original: {initialState.Velocity.Linear}");
+                        if (state.Value.Velocity.Angular != initialState.Velocity.Angular)
+                            Console.WriteLine($"FAILURE: Angular velocity, current: {state.Value.Velocity.Angular}, original: {initialState.Velocity.Angular}");
+                    }
+                }
+                Console.WriteLine($"Test {i} complete.");
+            }
+            Console.WriteLine($"All runs complete.");
         }
     }
 }

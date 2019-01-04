@@ -33,7 +33,7 @@ namespace Demos.Demos
                 var margin = new Vector<float>(1f);
                 Vector3Wide.Broadcast(new Vector3(1, -1, 0), out var offsetB);
                 QuaternionWide.Broadcast(BepuUtilities.Quaternion.CreateFromAxisAngle(new Vector3(0, 1, 0), MathF.PI / 2), out var orientationB);
-                tester.Test(ref sphere, ref triangle, ref margin, ref offsetB, ref orientationB, out var manifold);
+                tester.Test(ref sphere, ref triangle, ref margin, ref offsetB, ref orientationB, Vector<float>.Count, out var manifold);
             }
             {
                 CapsuleTriangleTester tester;
@@ -52,7 +52,7 @@ namespace Demos.Demos
                 Vector3Wide.Broadcast(new Vector3(-1f, -0.5f, -1f), out var offsetB);
                 QuaternionWide.Broadcast(BepuUtilities.Quaternion.CreateFromAxisAngle(Vector3.Normalize(new Vector3(-1, 0, 1)), MathHelper.PiOver2), out var orientationA);
                 QuaternionWide.Broadcast(BepuUtilities.Quaternion.CreateFromAxisAngle(new Vector3(0, 1, 0), 0), out var orientationB);
-                tester.Test(ref capsule, ref triangle, ref margin, ref offsetB, ref orientationA, ref orientationB, out var manifold);
+                tester.Test(ref capsule, ref triangle, ref margin, ref offsetB, ref orientationA, ref orientationB, Vector<float>.Count, out var manifold);
             }
             {
                 BoxTriangleTester tester;
@@ -71,7 +71,7 @@ namespace Demos.Demos
                 Vector3Wide.Broadcast(new Vector3(-1f, -0.5f, -1f), out var offsetB);
                 QuaternionWide.Broadcast(BepuUtilities.Quaternion.CreateFromAxisAngle(Vector3.Normalize(new Vector3(-1, 0, 1)), MathHelper.PiOver2), out var orientationA);
                 QuaternionWide.Broadcast(BepuUtilities.Quaternion.CreateFromAxisAngle(new Vector3(0, 1, 0), 0), out var orientationB);
-                tester.Test(ref shape, ref triangle, ref margin, ref offsetB, ref orientationA, ref orientationB, out var manifold);
+                tester.Test(ref shape, ref triangle, ref margin, ref offsetB, ref orientationA, ref orientationB, Vector<float>.Count, out var manifold);
             }
             {
                 TrianglePairTester tester;
@@ -83,14 +83,13 @@ namespace Demos.Demos
                 Vector3Wide.Broadcast(new Vector3(0, -1, 0), out var offsetB);
                 QuaternionWide.Broadcast(BepuUtilities.Quaternion.CreateFromAxisAngle(Vector3.Normalize(new Vector3(-1, 0, 1)), 0), out var orientationA);
                 QuaternionWide.Broadcast(BepuUtilities.Quaternion.CreateFromAxisAngle(new Vector3(0, 1, 0), 0), out var orientationB);
-                tester.Test(ref a, ref b, ref margin, ref offsetB, ref orientationA, ref orientationB, out var manifold);
+                tester.Test(ref a, ref b, ref margin, ref offsetB, ref orientationA, ref orientationB, Vector<float>.Count, out var manifold);
             }
             {
                 camera.Position = new Vector3(0, 3, 10);
                 camera.Yaw = 0;
 
-                Simulation = Simulation.Create(BufferPool, new TestCallbacks());
-                Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+                Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
                 var triangleDescription = new StaticDescription
                 {
@@ -105,12 +104,12 @@ namespace Demos.Demos
                             new Vector3(-3, -0.5f, -3),
                             new Vector3(3, 0, -3),
                             new Vector3(-3, 0, 3))),
-                        SpeculativeMargin = 0.1f
+                        SpeculativeMargin = 10.1f
                     }
                 };
                 Simulation.Statics.Add(triangleDescription);
 
-                var shape = new Triangle(new Vector3(0, 0, 1), new Vector3(0, 0, 0), new Vector3(-1, 1, 0));
+                var shape = new Triangle(new Vector3(0, 0, 3), new Vector3(0, 0, 0), new Vector3(-3, 3, 0));
                 var bodyDescription = new BodyDescription
                 {
                     Collidable = new CollidableDescription { Shape = Simulation.Shapes.Add(shape), SpeculativeMargin = 0.1f },
@@ -128,11 +127,11 @@ namespace Demos.Demos
             }
         }
 
-        public override void Update(Input input, float dt)
+        public override void Update(Window window, Camera camera, Input input, float dt)
         {
             if (input.IsDown(OpenTK.Input.Key.P))
                 Console.WriteLine("ASDF");
-            base.Update(input, dt);
+            base.Update(window, camera, input, dt);
         }
 
 

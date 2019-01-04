@@ -22,18 +22,9 @@ namespace Demos.Demos
         {
             camera.Position = new Vector3(-10, 0, -10);
             camera.Yaw = MathHelper.Pi * 3f / 4;
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks());
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
 
-        }
-
-        public override void Update(Input input, float dt)
-        {
-
-            //if (input.IsDown(OpenTK.Input.Key.P))
-            //    Console.Write("SDF");
-            base.Update(input, dt);
         }
 
         void GetArcExpansion(in Vector3 offset, in Vector3 angularVelocity, float dt, out Vector3 minExpansion, out Vector3 maxExpansion)
@@ -148,7 +139,7 @@ namespace Demos.Demos
             maxExpansion = maxExpansionA + maxExpansionB;
         }
 
-        public unsafe override void Render(Renderer renderer, TextBuilder text, Font font)
+        public unsafe override void Render(Renderer renderer, Camera camera, Input input, TextBuilder text, Font font)
         {
             var testBox = new Box(1, 1, 1);
             var orientationA = Quaternion.Identity;
@@ -167,8 +158,8 @@ namespace Demos.Demos
                 var t = (dt * i) / (pathPointCount - 1);
                 //local point = (aPosition + aLinear * t - bPosition - bLinear * t + localOffsetA * (orientationA * rotate(angularA * t)) * inverse(orientationB * rotate(angularB * t))
 
-                PoseIntegrator.Integrate(orientationA, velocityA.Angular, t, out var integratedA);
-                PoseIntegrator.Integrate(orientationB, velocityB.Angular, t, out var integratedB);
+                PoseIntegration.Integrate(orientationA, velocityA.Angular, t, out var integratedA);
+                PoseIntegration.Integrate(orientationB, velocityB.Angular, t, out var integratedB);
                 var worldRotatedPoint = velocityA.Linear * t - velocityB.Linear * t - offsetB + Quaternion.Transform(localPoseA.Position, integratedA);
                 localPathPoints[i] = Quaternion.Transform(worldRotatedPoint, Quaternion.Conjugate(integratedB));
             }
@@ -216,7 +207,7 @@ namespace Demos.Demos
                 Console.WriteLine($"Time per sweep bound test (ns): {(end - start) * (1e9 / (testCount * Stopwatch.Frequency))}");
             }
 
-            base.Render(renderer, text, font);
+            base.Render(renderer, camera, input, text, font);
         }
     }
 }

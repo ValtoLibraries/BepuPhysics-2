@@ -27,8 +27,7 @@ namespace Demos.Demos
             camera.Position = new Vector3(-30, 8, -60);
             camera.Yaw = MathHelper.Pi * 3f / 4;
 
-            Simulation = Simulation.Create(BufferPool, new TestCallbacks());
-            Simulation.PoseIntegrator.Gravity = new Vector3(0, -10, 0);
+            Simulation = Simulation.Create(BufferPool, new DemoNarrowPhaseCallbacks(), new DemoPoseIntegratorCallbacks(new Vector3(0, -10, 0)));
 
             var boxShape = new Box(1, 1, 1);
             boxShape.ComputeInertia(1, out var boxInertia);
@@ -106,9 +105,9 @@ namespace Demos.Demos
 
         BodyDescription coinDescription;
         Random random = new Random(5);
-        public override void Update(Input input, float dt)
+        public override void Update(Window window, Camera camera, Input input, float dt)
         {
-            if (input.WasPushed(OpenTK.Input.Key.Q))
+            if (input.WasPushed(OpenTK.Input.Key.Z))
             {
                 //INVEST TODAY FOR INCREDIBLE RETURNS DON'T MISS OUT LOOK AT THE COINS THERE ARE A LOT OF THEM AND THEY COULD BE YOURS
                 var origin = new Vector3(-30, 5, -30) + new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble()) * new Vector3(60, 30, 60);
@@ -125,15 +124,15 @@ namespace Demos.Demos
                     coinDescription.Velocity.Linear = direction * (5 + 30 * (float)random.NextDouble());
                     Simulation.Bodies.Add(coinDescription);
                 }
-            }
-            base.Update(input, dt);
+            }            
+            base.Update(window, camera, input, dt);
         }
 
-        public override void Render(Renderer renderer, TextBuilder text, Font font)
+        public override void Render(Renderer renderer, Camera camera, Input input, TextBuilder text, Font font)
         {
-            text.Clear().Append("Press Q to create an ICO.");
+            text.Clear().Append("Press Z to create an ICO.");
             renderer.TextBatcher.Write(text, new Vector2(20, renderer.Surface.Resolution.Y - 20), 16, new Vector3(1, 1, 1), font);
-            base.Render(renderer, text, font);
+            base.Render(renderer, camera, input, text, font);
         }
 
     }

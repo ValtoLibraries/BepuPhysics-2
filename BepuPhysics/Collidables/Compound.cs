@@ -84,18 +84,18 @@ namespace BepuPhysics.Collidables
             {
                 ref var child = ref Children[i];
                 ComputeChildBounds(Children[i], orientation, shapeBatches, out var childMin, out var childMax);
-                BoundingBox.CreateMerged(ref min, ref max, ref childMin, ref childMax, out min, out max);
+                BoundingBox.CreateMerged(min, max, childMin, childMax, out min, out max);
             }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void AddChildBoundsToBatcher(ref BoundingBoxBatcher batcher, ref RigidPose pose, ref BodyVelocity velocity, int bodyIndex)
+        public void AddChildBoundsToBatcher(ref BoundingBoxBatcher batcher, in RigidPose pose, in BodyVelocity velocity, int bodyIndex)
         {
             for (int i = 0; i < Children.Length; ++i)
             {
                 ref var child = ref Children[i];
                 GetWorldPose(child.LocalPose, pose, out var childPose);
-                batcher.AddCompoundChild(bodyIndex, Children[i].ShapeIndex, ref childPose, ref velocity);
+                batcher.AddCompoundChild(bodyIndex, Children[i].ShapeIndex, childPose, velocity);
             }
         }
 
@@ -118,7 +118,7 @@ namespace BepuPhysics.Collidables
             return t < float.MaxValue;
         }
 
-        public void RayTest<TRayHitHandler>(in RigidPose pose, Shapes shapeBatches, ref RaySource rays, ref TRayHitHandler hitHandler) where TRayHitHandler : struct, IShapeRayHitHandler
+        public void RayTest<TRayHitHandler>(in RigidPose pose, Shapes shapeBatches, ref RaySource rays, ref TRayHitHandler hitHandler) where TRayHitHandler : struct, IShapeRayBatchHitHandler
         {
             for (int i = 0; i < Children.Length; ++i)
             {
